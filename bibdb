@@ -172,7 +172,7 @@ def get_bib_entry_str(cur, cite_key):
     
     entry_id, entry_type = row
     cur.execute("SELECT field_key, field_value FROM fields WHERE entry_id = ?", (entry_id,))
-    fields = cur.fetchall()
+    fields = sorted(cur.fetchall(), key=lambda x: x[0])
     
     lines = [f"@{entry_type}{{{cite_key},"]
     for k, v in fields:
