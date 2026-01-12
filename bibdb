@@ -360,12 +360,25 @@ def cmd_list(args):
 # -----------------------------------------------------------------------------
 def _read_keys_from_args_or_stdin(args) -> List[str]:
     keys: List[str] = []
+
+    # 1. コマンドライン引数から取得 (例: bibdb delete Key1 Key2)
+    # ※ main関数側で keys_pos 引数の定義が必要です
+    if hasattr(args, "keys_pos") and args.keys_pos:
+        keys.extend(args.keys_pos)
+
+    # 2. ファイル指定 (--keys) から取得
     if getattr(args, "keys", None):
-        with open(args.keys, "r", encoding="utf-8") as f:
-            keys = [line.strip() for line in f if line.strip()]
-    else:
-        if not sys.stdin.isatty():
-            keys = [line.strip() for line in sys.stdin if line.strip()]
+        if os.path.exists(args.keys):
+            with open(args.keys, "r", encoding="utf-8") as f:
+                keys.extend([line.strip() for line in f if line.strip()])
+        else:
+            sys.stderr.write(f"Error: File not found: {args.keys}\n")
+
+    # 3. パイプ入力 (stdin) から取得
+    # 対話モード(isatty=True)の場合は入力を待ってしまうため読み込まない
+    if not sys.stdin.isatty():
+        keys.extend([line.strip() for line in sys.stdin if line.strip()])
+
     # 重複除去（順序保持）
     seen = set()
     uniq = []
@@ -377,26 +390,27 @@ def _read_keys_from_args_or_stdin(args) -> List[str]:
 
 def cmd_delete(args):
     conn = get_connection()
-    init_db(conn)
+    # init_db(conn) # 削除処理のみなのでinitは必須ではない
     cur = conn.cursor()
 
     target_keys = _read_keys_from_args_or_stdin(args)
     if not target_keys:
-        sys.stderr.write("Error: no cite keys provided. Use --keys or pipe keys via stdin.\n")
+        sys.stderr.write("Error: no cite keys provided.\n")
+        sys.stderr.write("Usage: bibdb delete KEY1 [KEY2 ...]  OR  echo KEY | bibdb delete\n")
         conn.close()
         sys.exit(2)
 
-    # 削除対象の存在確認（＋削除件数表示）
+    # 削除対象の存在確認
     cur.execute(
         f"SELECT cite_key FROM entries WHERE cite_key IN ({','.join('?' for _ in target_keys)})",
         target_keys,
     )
     existing = {row[0] for row in cur.fetchall()}
+    
+    # 見つからないキーの警告
     missing = [k for k in target_keys if k not in existing]
-
-    if missing:
-        for k in missing:
-            sys.stderr.write(f"Warning: {k} not found.\n")
+    for k in missing:
+        sys.stderr.write(f"Warning: {k} not found.\n")
 
     delete_keys = [k for k in target_keys if k in existing]
     if not delete_keys:
@@ -404,21 +418,36 @@ def cmd_delete(args):
         conn.close()
         return
 
+    # 確認プロンプト
     if not args.force:
         sys.stderr.write(f"About to delete {len(delete_keys)} entries from DB: {DB_PATH}\n")
         sys.stderr.write("Proceed? [y/N]: ")
-        # NOTE: keys を stdin から受け取る設計なので、確認入力は tty から読む
+        sys.stderr.flush()
+
+        ans = ""
         try:
+            # Unix/Linux/macOS 用
             with open("/dev/tty", "r", encoding="utf-8") as tty:
                 ans = tty.readline().strip().lower()
         except OSError:
-            # tty が無い環境（CI等）では stdin にフォールバック
-            ans = sys.stdin.readline().strip().lower()
+            try:
+                # Windows 用 (CONIN$)
+                with open("CONIN$", "r", encoding="utf-8") as conin:
+                    ans = conin.readline().strip().lower()
+            except OSError:
+                # TTYもCONIN$も使えない環境（完全な非対話環境など）
+                # forceオプションがないため、安全側に倒して中止
+                sys.stderr.write("\nError: Cannot read confirmation (no TTY). Use --force to proceed.\n")
+                conn.close()
+                sys.exit(1)
+
         if ans != "y":
             sys.stderr.write("Canceled.\n")
             conn.close()
             return
 
+    # 削除実行
+    # ON DELETE CASCADE により fields も自動削除される
     cur.execute(
         f"DELETE FROM entries WHERE cite_key IN ({','.join('?' for _ in delete_keys)})",
         delete_keys,
@@ -426,6 +455,7 @@ def cmd_delete(args):
     conn.commit()
     sys.stderr.write(f"Deleted {cur.rowcount} entries.\n")
     conn.close()
+
 
 # -----------------------------------------------------------------------------
 # Main Parser
@@ -457,6 +487,7 @@ def main():
 
     # Command: delete
     parser_delete = subparsers.add_parser("delete", help="Delete entries by cite keys (file or stdin)")
+    parser_delete.add_argument("keys_pos", nargs='*', help="Cite keys to delete")
     parser_delete.add_argument("--keys", "-k", help="File with list of cite keys (one per line)")
     parser_delete.add_argument("--force", "-f", action="store_true", help="Delete without confirmation")
     parser_delete.set_defaults(func=cmd_delete)
