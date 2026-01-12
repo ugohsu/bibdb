@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+import sqlite3
+import argparse
+import sys
+import os
+import re
+import difflib
+from difflib import SequenceMatcher
+
+# 外部ライブラリ (import機能でのみ必要)
+try:
+    import bibtexparser
+except ImportError:
+    bibtexparser = None
+
+# 定数・設定
+DB_PATH = os.path.expanduser("~/refs.db")
+
+# -----------------------------------------------------------------------------
+# 共通ユーティリティ
+# -----------------------------------------------------------------------------
+def get_connection():
+    """DB接続を取得"""
+    return sqlite3.connect(DB_PATH)
+
+def init_db(conn):
+    """テーブル初期化"""
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cite_key TEXT UNIQUE NOT NULL,
+        entry_type TEXT NOT NULL,
+        added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS fields (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entry_id INTEGER,
+        field_key TEXT NOT NULL,
+        field_value TEXT,
+        FOREIGN KEY(entry_id) REFERENCES entries(id) ON DELETE CASCADE,
+        UNIQUE(entry_id, field_key)
+    )
+    """)
+    conn.commit()
+
+# -----------------------------------------------------------------------------
+# 機能 1: Import (旧 bib2db.py)
+# -----------------------------------------------------------------------------
+def get_db_entry_dict(cur, cite_key):
+    """DBから既存データを取得して辞書形式で返す (比較用)"""
+    cur.execute("SELECT id, entry_type FROM entries WHERE cite_key = ?", (cite_key,))
+    row = cur.fetchone()
+    if not row:
+        return None, None
+    
+    entry_id, entry_type = row
+    cur.execute("SELECT field_key, field_value FROM fields WHERE entry_id = ?", (entry_id,))
+    
+    data = {row[0]: row[1] for row in cur.fetchall()}
+    data['ENTRYTYPE'] = entry_type
+    return entry_id, data
+
+def show_diff(cite_key, db_data, new_data):
+    """Gitライクな差分表示"""
+    print(f"\n--- Conflict detected: {cite_key} ---")
+    all_keys = sorted(set(db_data.keys()) | set(new_data.keys()))
+    
+    for key in all_keys:
+        if key in ['ID']: continue
+        val_db = db_data.get(key)
+        val_new = new_data.get(key)
+        
+        if val_db != val_new:
+            print(f"Key: {key}")
+            print(f"  - DB : {val_db if val_db is not None else '(Not exists)'}")
+            print(f"  + New: {val_new if val_new is not None else '(Deleted)'}")
+
+def upsert_entry(conn, entry, force=False):
+    cur = conn.cursor()
+    cite_key = entry.get('ID')
+    new_type = entry.get('ENTRYTYPE')
+    
+    if not cite_key or not new_type:
+        return
+
+    # 入力データの整形
+    new_data = {'ENTRYTYPE': new_type}
+    for k, v in entry.items():
+        if k == 'ID': continue
+        new_data[k.lower()] = v.strip()
+
+    entry_id, db_data = get_db_entry_dict(cur, cite_key)
+
+    # 新規登録
+    if not entry_id:
+        print(f"[NEW] Adding {cite_key}...")
+        cur.execute("INSERT INTO entries (cite_key, entry_type) VALUES (?, ?)", (cite_key, new_type))
+        entry_id = cur.lastrowid
+        for k, v in new_data.items():
+            if k == 'ENTRYTYPE': continue
+            cur.execute("INSERT INTO fields (entry_id, field_key, field_value) VALUES (?, ?, ?)",
+                        (entry_id, k, v))
+        conn.commit()
+        return
+
+    # 既存比較
+    if db_data == new_data:
+        return
+
+    # コンフリクト解決
+    if force:
+        choice = 'o'
+    else:
+        show_diff(cite_key, db_data, new_data)
+        while True:
+            choice = input("Action? [o]verwrite / [s]kip : ").lower()
+            if choice in ['o', 's']:
+                break
+
+    if choice == 'o':
+        print(f"-> Overwriting {cite_key}...")
+        cur.execute("UPDATE entries SET entry_type = ? WHERE id = ?", (new_type, entry_id))
+        cur.execute("DELETE FROM fields WHERE entry_id = ?", (entry_id,))
+        for k, v in new_data.items():
+            if k == 'ENTRYTYPE': continue
+            cur.execute("INSERT INTO fields (entry_id, field_key, field_value) VALUES (?, ?, ?)",
+                        (entry_id, k, v))
+        conn.commit()
+    else:
+        print(f"-> Skipped {cite_key}")
+
+def cmd_import(args):
+    if bibtexparser is None:
+        sys.exit("Error: 'bibtexparser' module is required for import. (pip install bibtexparser)")
+        
+    conn = get_connection()
+    init_db(conn)
+
+    with open(args.bibfile, 'r', encoding='utf-8') as f:
+        bib_database = bibtexparser.load(f)
+
+    print(f"Processing {len(bib_database.entries)} entries from {args.bibfile}...")
+    for entry in bib_database.entries:
+        upsert_entry(conn, entry, force=args.force)
+    
+    conn.close()
+    print("Done.")
+
+# -----------------------------------------------------------------------------
+# 機能 2: Export (旧 db2bib.py)
+# -----------------------------------------------------------------------------
+def get_bib_entry_str(cur, cite_key):
+    cur.execute("SELECT id, entry_type FROM entries WHERE cite_key = ?", (cite_key,))
+    row = cur.fetchone()
+    if not row:
+        sys.stderr.write(f"Warning: {cite_key} not found.\n")
+        return None
+    
+    entry_id, entry_type = row
+    cur.execute("SELECT field_key, field_value FROM fields WHERE entry_id = ?", (entry_id,))
+    fields = cur.fetchall()
+    
+    lines = [f"@{entry_type}{{{cite_key},"]
+    for k, v in fields:
+        lines.append(f"  {k} = {{{v}}},")
+    lines.append("}\n")
+    return "\n".join(lines)
+
+def cmd_export(args):
+    conn = get_connection()
+    cur = conn.cursor()
+    target_keys = []
+
+    if args.all:
+        cur.execute("SELECT cite_key FROM entries")
+        target_keys = [row[0] for row in cur.fetchall()]
+    elif args.keys:
+        with open(args.keys, 'r', encoding='utf-8') as f:
+            target_keys = [line.strip() for line in f if line.strip()]
+    else:
+        # パイプ入力対応
+        if not sys.stdin.isatty():
+            target_keys = [line.strip() for line in sys.stdin if line.strip()]
+
+    for key in target_keys:
+        bib_str = get_bib_entry_str(cur, key)
+        if bib_str:
+            print(bib_str)
+    
+    conn.close()
+
+# -----------------------------------------------------------------------------
+# 機能 3: Dedup (旧 dedup_bib.py)
+# -----------------------------------------------------------------------------
+def normalize_text(text):
+    if not text: return ""
+    return re.sub(r'[\W_]+', '', text.lower())
+
+def get_similarity(a, b):
+    return SequenceMatcher(None, a, b).ratio()
+
+def get_entry_full_data(conn, eid):
+    cur = conn.cursor()
+    cur.execute("SELECT cite_key, entry_type FROM entries WHERE id = ?", (eid,))
+    key, etype = cur.fetchone()
+    cur.execute("SELECT field_key, field_value FROM fields WHERE entry_id = ?", (eid,))
+    fields = {k: v for k, v in cur.fetchall()}
+    fields['ENTRYTYPE'] = etype
+    return {'id': eid, 'key': key, 'fields': fields}
+
+def merge_entries(conn, keep_id, delete_id):
+    cur = conn.cursor()
+    cur.execute("SELECT field_key, field_value FROM fields WHERE entry_id = ?", (delete_id,))
+    del_fields = cur.fetchall()
+    
+    cur.execute("SELECT field_key FROM fields WHERE entry_id = ?", (keep_id,))
+    keep_keys = set(row[0] for row in cur.fetchall())
+    
+    for k, v in del_fields:
+        if k not in keep_keys:
+            cur.execute("INSERT INTO fields (entry_id, field_key, field_value) VALUES (?, ?, ?)",
+                        (keep_id, k, v))
+    
+    cur.execute("DELETE FROM entries WHERE id = ?", (delete_id,))
+    conn.commit()
+
+def show_detailed_comparison(conn, a_light, b_light, reason):
+    data_a = get_entry_full_data(conn, a_light['id'])
+    data_b = get_entry_full_data(conn, b_light['id'])
+    fields_a = data_a['fields']
+    fields_b = data_b['fields']
+    all_keys = sorted(set(fields_a.keys()) | set(fields_b.keys()))
+    
+    print("\n" + "="*80)
+    print(f" DUPLICATE CANDIDATE FOUND ({reason})")
+    print("="*80)
+    print(f"{'[A] KEEP':<40} | {'[B] KEEP':<40}")
+    print(f"{data_a['key']:<40} | {data_b['key']:<40}")
+    print(f"(ID: {data_a['id']}){' '*30} | (ID: {data_b['id']})")
+    print("-" * 80)
+
+    has_diff = False
+    for k in all_keys:
+        val_a = fields_a.get(k, "")
+        val_b = fields_b.get(k, "")
+        if val_a != val_b:
+            has_diff = True
+            disp_a = (val_a[:35] + '...') if len(val_a) > 35 else val_a
+            disp_b = (val_b[:35] + '...') if len(val_b) > 35 else val_b
+            if k not in fields_a: disp_a = "(missing)"
+            if k not in fields_b: disp_b = "(missing)"
+            print(f"{k.upper()}:")
+            print(f"  A: {disp_a}")
+            print(f"  B: {disp_b}")
+    
+    if not has_diff:
+        print(" >> No field differences detected.")
+    print("-" * 80)
+
+def cmd_dedup(args):
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    # 全エントリの軽量データを取得
+    cur.execute("SELECT id, cite_key FROM entries")
+    entries = []
+    for eid, key in cur.fetchall():
+        cur.execute("SELECT field_key, field_value FROM fields WHERE entry_id = ? AND field_key IN ('title', 'doi')", (eid,))
+        fields = {k: v for k, v in cur.fetchall()}
+        entries.append({
+            'id': eid,
+            'key': key,
+            'doi': fields.get('doi', ''),
+            'norm_title': normalize_text(fields.get('title', ''))
+        })
+    
+    total = len(entries)
+    processed = set()
+    print(f"Scanning {total} entries for duplicates (Threshold: {args.threshold})...")
+    
+    try:
+        for i in range(total):
+            if entries[i]['id'] in processed: continue
+            for j in range(i + 1, total):
+                if entries[j]['id'] in processed: continue
+                
+                a, b = entries[i], entries[j]
+                is_duplicate = False
+                reason = ""
+
+                if a['doi'] and b['doi'] and a['doi'] == b['doi']:
+                    is_duplicate = True; reason = "DOI Match"
+                elif a['norm_title'] and b['norm_title']:
+                    sim = get_similarity(a['norm_title'], b['norm_title'])
+                    if sim >= args.threshold:
+                        is_duplicate = True; reason = f"Title Sim {sim:.2f}"
+
+                if is_duplicate:
+                    show_detailed_comparison(conn, a, b, reason)
+                    while True:
+                        choice = input("Action? Keep [A] / Keep [B] / [S]kip: ").lower()
+                        if choice == 'a':
+                            print(f"-> Merging B into A...")
+                            merge_entries(conn, a['id'], b['id'])
+                            processed.add(b['id'])
+                            break
+                        elif choice == 'b':
+                            print(f"-> Merging A into B...")
+                            merge_entries(conn, b['id'], a['id'])
+                            processed.add(a['id'])
+                            break
+                        elif choice == 's':
+                            print("-> Skipped.")
+                            break
+    finally:
+        conn.close()
+
+# -----------------------------------------------------------------------------
+# Main Parser
+# -----------------------------------------------------------------------------
+def main():
+    parser = argparse.ArgumentParser(description="BibTeX Database Manager (SQLite)")
+    subparsers = parser.add_subparsers(dest="command", required=True, help="Sub-commands")
+
+    # Command: import
+    parser_import = subparsers.add_parser("import", help="Import .bib file into DB")
+    parser_import.add_argument("bibfile", help="Input .bib file path")
+    parser_import.add_argument("--force", "-f", action="store_true", help="Force overwrite conflicts")
+    parser_import.set_defaults(func=cmd_import)
+
+    # Command: export
+    parser_export = subparsers.add_parser("export", help="Export DB entries to BibTeX")
+    parser_export.add_argument("--keys", "-k", help="File with list of cite keys (one per line)")
+    parser_export.add_argument("--all", "-a", action="store_true", help="Export all entries")
+    parser_export.set_defaults(func=cmd_export)
+
+    # Command: dedup
+    parser_dedup = subparsers.add_parser("dedup", help="Find and merge duplicates")
+    parser_dedup.add_argument("--threshold", "-t", type=float, default=0.9, help="Similarity threshold (0.0-1.0)")
+    parser_dedup.set_defaults(func=cmd_dedup)
+
+    args = parser.parse_args()
+    args.func(args)
+
+if __name__ == "__main__":
+    main()
