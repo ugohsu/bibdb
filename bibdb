@@ -14,7 +14,8 @@ except ImportError:
     bibtexparser = None
 
 # 定数・設定
-DB_PATH = os.path.expanduser("~/refs.db")
+# 環境変数 BIBDB_PATH があればそれを使い、なければデフォルトの ~/refs.db を使う
+DB_PATH = os.getenv("BIBDB_PATH", os.path.expanduser("~/refs.db"))
 
 # -----------------------------------------------------------------------------
 # 共通ユーティリティ

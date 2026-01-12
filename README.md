@@ -7,7 +7,8 @@
 
 ## 特徴
 
-* **SQLite マスタ管理**: 堅牢な SQLite (`~/refs.db`) でデータを管理。UNIX ツール (`sqlite3`) との親和性が高い。
+* **SQLite マスタ管理**: 堅牢な SQLite (`~/refs.db`) でデータを管理。
+* **Dropbox / クラウド同期対応**: 環境変数により、データベースの場所を自由に設定可能。
 * **安全なインポート (Git-like Conflict Resolution)**: 既存データと異なる内容をインポートする際、差分を表示して「上書き(Overwrite)」か「スキップ(Skip)」かを選択できます。
 * **重複整理 (Deduplication)**: DOI の一致やタイトルの類似度（Fuzzy matching）に基づいて重複候補を検出し、対話的にマージできます。
 * **柔軟なエクスポート**: 全件出力はもちろん、指定した文献キーのリストに基づいた部分出力が可能。Pandoc を使った執筆フローに最適です。
@@ -34,6 +35,21 @@ chmod +x ~/bin/bibdb
 ```
 
 
+
+## 設定（データベースの場所）
+
+デフォルトでは `~/refs.db` にデータベースが作成されます。
+Dropbox 等で同期したい場合は、環境変数 `BIBDB_PATH` で場所を指定できます。
+
+**設定例 (`.bashrc` または `.zshrc`)**:
+
+```bash
+# BibDB Database Path
+export BIBDB_PATH="$HOME/Dropbox/refs.db"
+
+```
+
+設定後、シェルを再読み込みすれば `bibdb` は自動的にそのパスを参照します。
 
 ## 使い方
 
@@ -138,7 +154,7 @@ pandoc input.md --bibliography=temp.bib --csl=apa.csl -o reference_list.docx
 
 ## データベース構造
 
-データは `~/refs.db` (SQLite) に保存されます。
+データは SQLite ファイル (`refs.db`) に保存されます。
 `sqlite3` コマンドで直接参照・操作することも可能です。
 
 * **entries テーブル**: 文献IDとタイプ (`article`, `book` 等) を管理。
