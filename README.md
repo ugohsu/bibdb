@@ -11,12 +11,14 @@
 * **Dropbox / クラウド同期対応**: 環境変数により、データベースの場所を自由に設定可能。
 * **安全なインポート (Git-like Conflict Resolution)**: 既存データと異なる内容をインポートする際、差分を表示して「上書き(Overwrite)」か「スキップ(Skip)」かを選択できます。
 * **重複整理 (Deduplication)**: DOI の一致やタイトルの類似度（Fuzzy matching）に基づいて重複候補を検出し、対話的にマージできます。
+* **強力なリスト選択 (fzf連携)**: 文献一覧をタブ区切りで出力し、`fzf` 等のツールとパイプで繋ぐことで、高速に文献を検索・選択できます。
 * **柔軟なエクスポート**: 全件出力はもちろん、指定した文献キーのリストに基づいた部分出力が可能。Pandoc を使った執筆フローに最適です。
 
 ## 必要要件
 
 * Python 3.6+
 * [bibtexparser](https://github.com/sciunto-org/python-bibtexparser)
+* 推奨ツール: `fzf` (コマンドラインでの絞り込み選択に便利です)
 
 ## インストール
 
@@ -53,7 +55,7 @@ export BIBDB_PATH="$HOME/Dropbox/refs.db"
 
 ## 使い方
 
-`bibdb` はサブコマンド形式 (`import`, `export`, `dedup`) で動作します。
+`bibdb` はサブコマンド形式 (`import`, `export`, `dedup`, `list`) で動作します。
 
 ### 1. データのインポート (`import`)
 
@@ -128,21 +130,43 @@ bibdb dedup
 
 * `--threshold <0.0-1.0>`: タイトル類似度のしきい値を変更します（例: `-t 0.8`）。
 
+### 4. 文献の一覧と活用 (`list`)
+
+データベース内の文献を、UNIX ツールで処理しやすい形式（タブ区切り）で一覧表示します。
+`fzf` (fuzzy finder) や `grep` と組み合わせることで、強力な検索・選択が可能になります。
+
+```bash
+bibdb list
+# 出力形式: [CiteKey] \t [Title] ([Year]) - [Author]
+# 例:
+# Ohsu2024    Analysis of Big Data (2024) - Yuji Ohsu
+# Knuth1984   Literate Programming (1984) - Donald E. Knuth
+
+```
+
+**活用例: `fzf` を使ったインタラクティブな文献選択**
+
+`fzf` で文献を絞り込み・複数選択（Tabキー）し、選択した文献だけの `.bib` ファイルを生成できます。
+
+```bash
+# リスト表示 -> fzfで選択 -> キー抽出 -> export
+bibdb list | fzf -m | awk '{print $1}' | bibdb export > selected.bib
+
+```
+
 ## 運用フロー例: Word での論文執筆 (Pandoc連携)
 
 Word で特定のフォーマット（APA, IEEEなど）の文献リストが必要な場合のワークフローです。
 
-1. **文献キーのリスト作成**:
-論文で使用する文献IDを `citations.txt` にリストアップします。
-2. **BibTeX 生成**:
-`bibdb` を使って必要な文献だけの `.bib` を作ります。
+1. **文献の選択**:
+`fzf` などを使い、必要な文献を選んで一時ファイルに出力します。
 ```bash
-bibdb export -k citations.txt > temp.bib
+bibdb list | fzf -m | awk '{print $1}' | bibdb export > temp.bib
 
 ```
 
 
-3. **Pandoc で変換**:
+2. **Pandoc で変換**:
 Pandoc と CSL (Citation Style Language) を使って Word ファイルを生成します。
 ```bash
 # input.md には "--- nocite: '@*' ... ---" などを記述
