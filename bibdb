@@ -326,6 +326,32 @@ def cmd_dedup(args):
         conn.close()
 
 # -----------------------------------------------------------------------------
+# 機能 4: List (fzf連携用の一覧出力)
+# -----------------------------------------------------------------------------
+def cmd_list(args):
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    # 必要な情報だけ取得
+    cur.execute("SELECT id, cite_key FROM entries")
+    entries = cur.fetchall()
+    
+    for eid, key in entries:
+        # タイトルと著者を取得（なければ空文字）
+        cur.execute("SELECT field_key, field_value FROM fields WHERE entry_id = ? AND field_key IN ('title', 'author', 'year')", (eid,))
+        fields = {k: v for k, v in cur.fetchall()}
+        
+        title = fields.get('title', '(No Title)').replace('\n', ' ')[:60] # 長すぎる場合はカット
+        author = fields.get('author', '(No Author)').replace('\n', ' ')[:30]
+        year = fields.get('year', '????')
+        
+        # 読みやすい形式で出力 (fzfで見やすいように)
+        # 形式: Key [TAB] Title (Year) - Author
+        print(f"{key}\t{title} ({year}) - {author}")
+
+    conn.close()
+
+# -----------------------------------------------------------------------------
 # Main Parser
 # -----------------------------------------------------------------------------
 def main():
@@ -348,6 +374,10 @@ def main():
     parser_dedup = subparsers.add_parser("dedup", help="Find and merge duplicates")
     parser_dedup.add_argument("--threshold", "-t", type=float, default=0.9, help="Similarity threshold (0.0-1.0)")
     parser_dedup.set_defaults(func=cmd_dedup)
+
+    # Command: list
+    parser_list = subparsers.add_parser("list", help="List entries for fzf/grep")
+    parser_list.set_defaults(func=cmd_list)
 
     args = parser.parse_args()
     args.func(args)
