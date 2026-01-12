@@ -6,6 +6,7 @@ import os
 import re
 import difflib
 from difflib import SequenceMatcher
+from typing import List
 
 # 外部ライブラリ (import機能でのみ必要)
 try:
@@ -22,7 +23,10 @@ DB_PATH = os.getenv("BIBDB_PATH", os.path.expanduser("~/refs.db"))
 # -----------------------------------------------------------------------------
 def get_connection():
     """DB接続を取得"""
-    return sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH)
+    # IMPORTANT: ON DELETE CASCADE を効かせる（SQLiteはデフォルト無効のことが多い）
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
 
 def init_db(conn):
     """テーブル初期化"""
@@ -91,7 +95,7 @@ def upsert_entry(conn, entry, force=False):
     new_data = {'ENTRYTYPE': new_type}
     for k, v in entry.items():
         if k == 'ID': continue
-        new_data[k.lower()] = v.strip()
+        new_data[k.lower()] = str(v).strip()
 
     entry_id, db_data = get_db_entry_dict(cur, cite_key)
 
@@ -352,6 +356,77 @@ def cmd_list(args):
     conn.close()
 
 # -----------------------------------------------------------------------------
+# 機能 5: Delete (keys / stdin で指定した cite_key を削除)
+# -----------------------------------------------------------------------------
+def _read_keys_from_args_or_stdin(args) -> List[str]:
+    keys: List[str] = []
+    if getattr(args, "keys", None):
+        with open(args.keys, "r", encoding="utf-8") as f:
+            keys = [line.strip() for line in f if line.strip()]
+    else:
+        if not sys.stdin.isatty():
+            keys = [line.strip() for line in sys.stdin if line.strip()]
+    # 重複除去（順序保持）
+    seen = set()
+    uniq = []
+    for k in keys:
+        if k not in seen:
+            seen.add(k)
+            uniq.append(k)
+    return uniq
+
+def cmd_delete(args):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    target_keys = _read_keys_from_args_or_stdin(args)
+    if not target_keys:
+        sys.stderr.write("Error: no cite keys provided. Use --keys or pipe keys via stdin.\n")
+        conn.close()
+        sys.exit(2)
+
+    # 削除対象の存在確認（＋削除件数表示）
+    cur.execute(
+        f"SELECT cite_key FROM entries WHERE cite_key IN ({','.join('?' for _ in target_keys)})",
+        target_keys,
+    )
+    existing = {row[0] for row in cur.fetchall()}
+    missing = [k for k in target_keys if k not in existing]
+
+    if missing:
+        for k in missing:
+            sys.stderr.write(f"Warning: {k} not found.\n")
+
+    delete_keys = [k for k in target_keys if k in existing]
+    if not delete_keys:
+        sys.stderr.write("Nothing to delete.\n")
+        conn.close()
+        return
+
+    if not args.force:
+        sys.stderr.write(f"About to delete {len(delete_keys)} entries from DB: {DB_PATH}\n")
+        sys.stderr.write("Proceed? [y/N]: ")
+        # NOTE: keys を stdin から受け取る設計なので、確認入力は tty から読む
+        try:
+            with open("/dev/tty", "r", encoding="utf-8") as tty:
+                ans = tty.readline().strip().lower()
+        except OSError:
+            # tty が無い環境（CI等）では stdin にフォールバック
+            ans = sys.stdin.readline().strip().lower()
+        if ans != "y":
+            sys.stderr.write("Canceled.\n")
+            conn.close()
+            return
+
+    cur.execute(
+        f"DELETE FROM entries WHERE cite_key IN ({','.join('?' for _ in delete_keys)})",
+        delete_keys,
+    )
+    conn.commit()
+    sys.stderr.write(f"Deleted {cur.rowcount} entries.\n")
+    conn.close()
+
+# -----------------------------------------------------------------------------
 # Main Parser
 # -----------------------------------------------------------------------------
 def main():
@@ -378,6 +453,12 @@ def main():
     # Command: list
     parser_list = subparsers.add_parser("list", help="List entries for fzf/grep")
     parser_list.set_defaults(func=cmd_list)
+
+    # Command: delete
+    parser_delete = subparsers.add_parser("delete", help="Delete entries by cite keys (file or stdin)")
+    parser_delete.add_argument("--keys", "-k", help="File with list of cite keys (one per line)")
+    parser_delete.add_argument("--force", "-f", action="store_true", help="Delete without confirmation")
+    parser_delete.set_defaults(func=cmd_delete)
 
     args = parser.parse_args()
     args.func(args)
