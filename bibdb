@@ -390,7 +390,7 @@ def _read_keys_from_args_or_stdin(args) -> List[str]:
 
 def cmd_delete(args):
     conn = get_connection()
-    init_db(conn) # 削除処理のみなのでinitは必須ではない
+    init_db(conn)
     cur = conn.cursor()
 
     target_keys = _read_keys_from_args_or_stdin(args)
