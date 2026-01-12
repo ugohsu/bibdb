@@ -8,11 +8,26 @@ import difflib
 from difflib import SequenceMatcher
 from typing import List
 
-# 外部ライブラリ (import機能でのみ必要)
+# -----------------------------------------------------------------------------
+# 外部ライブラリ (bibtexparser) のバージョン互換性対応
+# v1系とv2系のどちらがインストールされていても動作するように判定する
+# -----------------------------------------------------------------------------
+BIBTEXPARSER_AVAILABLE = False
+BIBTEXPARSER_V2 = False
+
 try:
     import bibtexparser
+    BIBTEXPARSER_AVAILABLE = True
+    
+    # バージョン判定 (v2系はメジャーバージョンが2、または構造が大きく異なる)
+    if hasattr(bibtexparser, '__version__') and bibtexparser.__version__.startswith('2.'):
+        BIBTEXPARSER_V2 = True
+    elif hasattr(bibtexparser, 'parse_string'): 
+        # バージョン番号がない場合でも、v2特有の関数があればv2とみなす
+        BIBTEXPARSER_V2 = True
+        
 except ImportError:
-    bibtexparser = None
+    BIBTEXPARSER_AVAILABLE = False
 
 # 定数・設定
 # 環境変数 BIBDB_PATH があればそれを使い、なければデフォルトの ~/refs.db を使う
@@ -137,24 +152,50 @@ def upsert_entry(conn, entry, force=False):
     else:
         print(f"-> Skipped {cite_key}")
 
+def _parse_bib_file(filepath):
+    """バージョンに応じたBibTeXパース処理を行い、辞書のリストを返す"""
+    entries = []
+    
+    with open(filepath, 'r', encoding='utf-8') as f:
+        if BIBTEXPARSER_V2:
+            # --- v2.x 系の処理 ---
+            bib_str = f.read()
+            library = bibtexparser.parse_string(bib_str)
+            
+            for entry in library.entries:
+                # v2のEntryオブジェクトをv1互換の辞書に変換
+                # entry.fields は Field オブジェクトのリスト
+                d = {field.key: field.value for field in entry.fields}
+                d['ID'] = entry.key
+                d['ENTRYTYPE'] = entry.entry_type
+                entries.append(d)
+        else:
+            # --- v1.x 系の処理 ---
+            # 標準マクロ(jan, feb等)を解決するためのパーサー設定
+            from bibtexparser.bparser import BibTexParser
+            parser = BibTexParser(common_strings=True)
+            bib_database = bibtexparser.load(f, parser=parser)
+            entries = bib_database.entries
+            
+    return entries
+
 def cmd_import(args):
-    if bibtexparser is None:
-        sys.exit("Error: 'bibtexparser' module is required for import. (pip install bibtexparser)")
+    if not BIBTEXPARSER_AVAILABLE:
+        sys.exit("Error: 'bibtexparser' module is required. (apt install python3-bibtexparser)")
         
     conn = get_connection()
     init_db(conn)
 
-    # 修正箇所: 標準マクロ(jan, feb等)を解決するためのパーサー設定を作成
-    from bibtexparser.bparser import BibTexParser
-    parser = BibTexParser(common_strings=True)
+    print(f"Reading {args.bibfile}...")
+    try:
+        entries = _parse_bib_file(args.bibfile)
+    except Exception as e:
+        sys.exit(f"Error parsing .bib file: {e}")
 
-    with open(args.bibfile, 'r', encoding='utf-8') as f:
-        # parserを指定してロード
-        bib_database = bibtexparser.load(f, parser=parser)
-
-    print(f"Processing {len(bib_database.entries)} entries from {args.bibfile}...")
+    print(f"Processing {len(entries)} entries from {args.bibfile}...")
     print(f"Target DB: {DB_PATH}")
-    for entry in bib_database.entries:
+    
+    for entry in entries:
         upsert_entry(conn, entry, force=args.force)
     
     conn.close()
@@ -172,6 +213,7 @@ def get_bib_entry_str(cur, cite_key):
     
     entry_id, entry_type = row
     cur.execute("SELECT field_key, field_value FROM fields WHERE entry_id = ?", (entry_id,))
+    # 出力順を安定させるためキーでソート
     fields = sorted(cur.fetchall(), key=lambda x: x[0])
     
     lines = [f"@{entry_type}{{{cite_key},"]
@@ -362,7 +404,6 @@ def _read_keys_from_args_or_stdin(args) -> List[str]:
     keys: List[str] = []
 
     # 1. コマンドライン引数から取得 (例: bibdb delete Key1 Key2)
-    # ※ main関数側で keys_pos 引数の定義が必要です
     if hasattr(args, "keys_pos") and args.keys_pos:
         keys.extend(args.keys_pos)
 
@@ -390,7 +431,7 @@ def _read_keys_from_args_or_stdin(args) -> List[str]:
 
 def cmd_delete(args):
     conn = get_connection()
-    init_db(conn)
+    init_db(conn) # 安全のため初期化を実行
     cur = conn.cursor()
 
     target_keys = _read_keys_from_args_or_stdin(args)
@@ -436,7 +477,6 @@ def cmd_delete(args):
                     ans = conin.readline().strip().lower()
             except OSError:
                 # TTYもCONIN$も使えない環境（完全な非対話環境など）
-                # forceオプションがないため、安全側に倒して中止
                 sys.stderr.write("\nError: Cannot read confirmation (no TTY). Use --force to proceed.\n")
                 conn.close()
                 sys.exit(1)
@@ -447,7 +487,6 @@ def cmd_delete(args):
             return
 
     # 削除実行
-    # ON DELETE CASCADE により fields も自動削除される
     cur.execute(
         f"DELETE FROM entries WHERE cite_key IN ({','.join('?' for _ in delete_keys)})",
         delete_keys,
