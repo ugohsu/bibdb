@@ -140,10 +140,16 @@ def cmd_import(args):
     conn = get_connection()
     init_db(conn)
 
+    # 修正箇所: 標準マクロ(jan, feb等)を解決するためのパーサー設定を作成
+    from bibtexparser.bparser import BibTexParser
+    parser = BibTexParser(common_strings=True)
+
     with open(args.bibfile, 'r', encoding='utf-8') as f:
-        bib_database = bibtexparser.load(f)
+        # parserを指定してロード
+        bib_database = bibtexparser.load(f, parser=parser)
 
     print(f"Processing {len(bib_database.entries)} entries from {args.bibfile}...")
+    print(f"Target DB: {DB_PATH}")
     for entry in bib_database.entries:
         upsert_entry(conn, entry, force=args.force)
     
