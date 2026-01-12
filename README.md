@@ -36,8 +36,6 @@ chmod +x ~/bin/bibdb
 
 ```
 
-
-
 ## 設定（データベースの場所）
 
 デフォルトでは `~/refs.db` にデータベースが作成されます。
@@ -55,7 +53,7 @@ export BIBDB_PATH="$HOME/Dropbox/refs.db"
 
 ## 使い方
 
-`bibdb` はサブコマンド形式 (`import`, `export`, `dedup`, `list`) で動作します。
+`bibdb` はサブコマンド形式 (`import`, `export`, `dedup`, `list`, `delete`) で動作します。
 
 ### 1. データのインポート (`import`)
 
@@ -153,6 +151,43 @@ bibdb list
 bibdb list | fzf -m | awk '{print $1}' | bibdb export > selected.bib
 
 ```
+
+### 5. データの削除 (`delete`)
+
+指定した文献キー（Cite Key）を持つエントリをデータベースから削除します。
+
+**キーを直接指定:**
+
+コマンドライン引数でキーを指定して削除します。
+
+```bash
+bibdb delete Ohsu2024
+# 複数指定も可能です
+bibdb delete Ohsu2024 Knuth1984
+
+```
+
+**リストファイルから削除:**
+
+キーが列挙されたテキストファイルを指定して一括削除します。
+
+```bash
+bibdb delete --keys delete_list.txt
+
+```
+
+**パイプ連携 (fzf 等):**
+
+`list` コマンドや `fzf` と組み合わせることで、インタラクティブに選択して削除できます。
+
+```bash
+# fzf で選択した文献を削除
+bibdb list | fzf -m | awk '{print $1}' | bibdb delete
+
+```
+
+* **確認メッセージ**: デフォルトでは削除前に確認プロンプト (`Proceed? [y/N]`) が表示されます。
+* `--force` または `-f` オプションを付けると、確認なしで即座に削除します。
 
 ## 運用フロー例: Word での論文執筆 (Pandoc連携)
 
