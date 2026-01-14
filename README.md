@@ -310,7 +310,7 @@ pandoc input.md --bibliography=temp.bib --csl=apa.csl -o reference_list.docx
 
 ```bash
 bibdb <command> [options]
-````
+```
 
 サブコマンドは `import`, `export`, `dedup`, `list`, `delete` です。
 
