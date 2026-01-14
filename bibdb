@@ -64,6 +64,15 @@ def init_db(conn):
         UNIQUE(entry_id, field_key)
     )
     """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS extras (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entry_id INTEGER,
+        extra_key TEXT NOT NULL,
+        extra_value TEXT,
+        FOREIGN KEY(entry_id) REFERENCES entries(id) ON DELETE CASCADE
+    )
+    """)
     conn.commit()
 
 # -----------------------------------------------------------------------------
@@ -276,6 +285,15 @@ def merge_entries(conn, keep_id, delete_id):
         if k not in keep_keys:
             cur.execute("INSERT INTO fields (entry_id, field_key, field_value) VALUES (?, ?, ?)",
                         (keep_id, k, v))
+
+    # Merge extras (Lossless, deduplicate exact matches)
+    cur.execute("SELECT extra_key, extra_value FROM extras WHERE entry_id = ?", (keep_id,))
+    keep_extras = set((row[0], row[1]) for row in cur.fetchall())
+
+    cur.execute("SELECT id, extra_key, extra_value FROM extras WHERE entry_id = ?", (delete_id,))
+    for ex_id, k, v in cur.fetchall():
+        if (k, v) not in keep_extras:
+            cur.execute("UPDATE extras SET entry_id = ? WHERE id = ?", (keep_id, ex_id))
     
     cur.execute("DELETE FROM entries WHERE id = ?", (delete_id,))
     conn.commit()
