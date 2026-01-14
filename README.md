@@ -85,7 +85,7 @@ Action? [o]verwrite / [s]kip :
 **全件バックアップ:**
 
 ```bash
-bibdb export --all > master_backup.bib
+bibdb export > master_backup.bib
 
 ```
 
