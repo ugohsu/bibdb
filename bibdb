@@ -333,6 +333,7 @@ def show_detailed_comparison(conn, a_light, b_light, reason):
 
 def cmd_dedup(args):
     conn = get_connection()
+    init_db(conn)
     cur = conn.cursor()
     
     # 全エントリの軽量データを取得
