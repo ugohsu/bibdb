@@ -238,15 +238,186 @@ pandoc input.md --bibliography=temp.bib --csl=apa.csl -o reference_list.docx
 
 
 
-## データベース構造
+# Reference: Database Schema & CLI
 
-データは SQLite ファイル (`refs.db`) に保存されます。
-`sqlite3` コマンドで直接参照・操作することも可能です。
+## Database Schema (SQLite)
 
-* **entries テーブル**: 文献IDとタイプ (`article`, `book` 等) を管理。
-* **fields テーブル**: 文献ごとの詳細フィールド (`author`, `title`, `yomi` 等) を Key-Value 形式で保存。
-* **extras テーブル**: ユーザー固有の付加情報。`import` の影響を受けず、`dedup` 時には安全にマージされます。
+`bibdb` が作成・利用するテーブルは `entries`, `fields`, `extras` の3つです。
+
+
+---
+
+### Table: `entries` (文献の主テーブル)
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| id | INTEGER | PRIMARY KEY AUTOINCREMENT | 内部ID |
+| cite_key | TEXT | UNIQUE NOT NULL | CiteKey（例: `Knuth1984`） |
+| entry_type | TEXT | NOT NULL | BibTeX の ENTRYTYPE（例: `article`, `book`） |
+| added_at | DATETIME | DEFAULT CURRENT_TIMESTAMP | 登録日時 |
+
+---
+
+### Table: `fields` (BibTeX フィールド; Key-Value)
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| id | INTEGER | PRIMARY KEY AUTOINCREMENT | 内部ID |
+| entry_id | INTEGER | FOREIGN KEY → entries(id) ON DELETE CASCADE | 親エントリ |
+| field_key | TEXT | NOT NULL | 例: `title`, `author`, `year`, `doi` |
+| field_value | TEXT |  | 値（文字列） |
+| (entry_id, field_key) | — | UNIQUE(entry_id, field_key) | **文献ごとに field_key は一意** |
+
+**設計意図**
+- `fields` は “BibTeX 的に 1つのキーに 1つの値” を前提にしています。
+- `import` で更新されるのは基本的にこの `entries` + `fields` です。
+
+---
+
+### Table: `extras` (ユーザー独自データ; Key-Value)
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| id | INTEGER | PRIMARY KEY AUTOINCREMENT | 内部ID |
+| entry_id | INTEGER | FOREIGN KEY → entries(id) ON DELETE CASCADE | 親エントリ |
+| extra_key | TEXT | NOT NULL | 例: `memo`, `file`, `tag` |
+| extra_value | TEXT |  | 値（文字列） |
+| UNIQUE | — | (なし) | **同じ extra_key を複数持てる** |
+
+**設計意図**
+- `extras` は `bibdb` のサブコマンドでは編集しません（SQL で直接操作する運用を想定）。
+- `dedup` では **Lossless** に統合されます：
+  - 片方にしかない `(extra_key, extra_value)` は移動（同一ペアは重複回避）
+- `delete` では **ON DELETE CASCADE** により、紐づく `fields` / `extras` も削除されます。
+
+---
+
+### 重要ポイント（Unique 制約の違い）
+
+- **`entries.cite_key` は UNIQUE**
+  - 文献キー（CiteKey）は DB 全体で一意です。
+- **`fields` は (entry_id, field_key) が UNIQUE**
+  - **1つの文献（entry_id）につき、同じ field_key は1回しか持てません**（例：`title` は1つだけ）。
+- **`extras` には UNIQUE 制約がない**
+  - **1つの文献（entry_id）に同じ extra_key を複数持てます**（例：`memo` を複数行で保存、`file` を複数登録、などが可能）。
+  - これは「ユーザー独自データを自由に積める」設計です（ただし、重複管理はユーザー側の運用で行います）。
+
+---
+
+## CLI Reference (Arguments)
+
+基本形:
+
+```bash
+bibdb <command> [options]
+````
+
+サブコマンドは `import`, `export`, `dedup`, `list`, `delete` です。
+
+---
+
+### `bibdb import` — Import .bib file into DB
+
+```bash
+bibdb import <bibfile> [--force|-f]
+```
+
+| Arg          | Required | Description          |
+| ------------ | -------: | -------------------- |
+| bibfile      |      Yes | 入力 `.bib` ファイルパス     |
+| --force / -f |       No | コンフリクト時の確認をスキップして上書き |
+
+**挙動メモ**
+
+* CiteKey（BibTeX の `ID`）が新規なら `entries` + `fields` に追加。
+* 既存で差分があれば、通常は diff を出して overwrite/skip を選択（`--force` で全 overwrite）。
+
+---
+
+### `bibdb export` — Export DB entries to BibTeX
+
+```bash
+bibdb export [--keys|-k <file>] [--all|-a]
+# または（stdin）
+```
+
+| Arg                | Required | Description               |
+| ------------------ | -------: | ------------------------- |
+| --keys / -k <file> |       No | CiteKey を1行1件で書いたファイル     |
+| --all / -a         |       No | 全件を出力                     |
+| stdin              |       No | tty でない場合、stdin からキー列挙を読む |
+
+**優先順位（概念）**
+
+1. `--all` があれば全件
+2. `--keys` があればファイルから
+3. それ以外で stdin があれば stdin から
+
+---
+
+### `bibdb dedup` — Find and merge duplicates
+
+```bash
+bibdb dedup [--threshold|-t <float>]
+```
+
+| Arg              | Required | Default | Description          |
+| ---------------- | -------: | ------: | -------------------- |
+| --threshold / -t |       No |     0.9 | タイトル類似度しきい値（0.0–1.0） |
+
+**重複判定**
+
+* DOI の完全一致、または
+* 正規化タイトル同士の類似度（SequenceMatcher）≥ threshold
+
+**マージ方針（Lossless）**
+
+* `fields`: keep 側に存在しない field_key だけを追加
+* `extras`: keep 側に同一 `(extra_key, extra_value)` がないものだけを移動
+
+---
+
+### `bibdb list` — List entries for fzf/grep
+
+```bash
+bibdb list
+```
+
+オプションなし。文献キー・タイトル・年度・著者を出力します。
+
+---
+
+### `bibdb delete` — Delete entries by cite keys
+
+```bash
+bibdb delete [KEY1 KEY2 ...] [--keys|-k <file>] [--force|-f]
+# または（stdin）
+```
+
+| Arg                  | Required | Description                     |
+| -------------------- | -------: | ------------------------------- |
+| keys_pos (位置引数; 複数可) |       No | 直接キー指定（例: `bibdb delete A B C`） |
+| --keys / -k <file>   |       No | キー一覧ファイル（1行1件）                  |
+| --force / -f         |       No | 確認なしで削除（非対話環境では推奨）              |
+| stdin                |       No | tty でない場合、stdin からキー列挙を読む       |
+
+**削除時の注意**
+
+* `--force` がない場合、削除前に確認プロンプトが出ます。
+* ON DELETE CASCADE により、対象 `entries` を消すと、その `fields` / `extras` も同時に削除されます。
+
+---
+
+## Environment Variable
+
+| Name       | Meaning                     |
+| ---------- | --------------------------- |
+| BIBDB_PATH | DB の保存パス（未設定なら `~/refs.db`） |
+
+---
+
 
 ## License
 
 Personal Use / MIT License
+
