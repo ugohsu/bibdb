@@ -8,9 +8,10 @@
 ## 特徴
 
 * **SQLite マスタ管理**: 堅牢な SQLite (`~/refs.db`) でデータを管理。
+* **ユーザーデータの分離**: BibTeX 由来のデータとは別に、ユーザー独自のメモやファイルパスを `extras` テーブルで安全に管理。
 * **Dropbox / クラウド同期対応**: 環境変数により、データベースの場所を自由に設定可能。
 * **安全なインポート (Git-like Conflict Resolution)**: 既存データと異なる内容をインポートする際、差分を表示して「上書き(Overwrite)」か「スキップ(Skip)」かを選択できます。
-* **重複整理 (Deduplication)**: DOI の一致やタイトルの類似度（Fuzzy matching）に基づいて重複候補を検出し、対話的にマージできます。
+* **Lossless 重複整理**: 重複エントリをマージする際、片方にしかない独自情報（メモなど）は自動的に移動・統合され、情報は失われません。
 * **強力なリスト選択 (fzf連携)**: 文献一覧をタブ区切りで出力し、`fzf` 等のツールとパイプで繋ぐことで、高速に文献を検索・選択できます。
 * **柔軟なエクスポート**: 全件出力はもちろん、指定した文献キーのリストに基づいた部分出力が可能。Pandoc を使った執筆フローに最適です。
 
@@ -121,8 +122,10 @@ bibdb dedup
 
 ```
 
-* **判定基準**: DOI の完全一致、またはタイトルの類似度（デフォルト 90%以上）。
-* **マージ挙動**: 片方を残し（Keep）、もう片方を削除します。削除される側にしか存在しないフィールド情報は、残す側に自動的にコピーされます。
+* **判定基準**: DOI の完全一致、またはタイトルの類似度。
+* **Lossless Merge**:
+* BibTeX情報が重複している場合、片方を残して削除します。
+* **ユーザー独自データ（メモ等）は、削除される側から残す側へ自動的に移動・統合されます。** これにより、マージによって貴重なメモが消えることを防ぎます。
 
 **オプション:**
 
@@ -188,6 +191,50 @@ bibdb list | fzf -m | awk '{print $1}' | bibdb delete
 
 * **確認メッセージ**: デフォルトでは削除前に確認プロンプト (`Proceed? [y/N]`) が表示されます。
 * `--force` または `-f` オプションを付けると、確認なしで即座に削除します。
+* **Cascade Delete**: 文献を削除すると、その文献に紐付いているユーザー独自データ（`extras` テーブル内のメモやパスなど）も**自動的に削除**されます。ゴミデータは残りません。
+
+### 6. ユーザー独自データの管理 (`extras`)
+
+BibTeX ファイルには含まれない情報（PDFのパス、重要度、メモなど）は、`extras` テーブルで管理します。
+登録には `sqlite3` コマンドを使用します。
+
+**Tips: 文献キーを使ってデータを追加する**
+
+内部ID（`id`）を調べる必要はありません。以下の SQL パターンを使うことで、**文献キー（Cite Key）を指定して直接データを登録**できます。
+
+```sql
+-- 基本構文:
+-- INSERT INTO extras (entry_id, extra_key, extra_value)
+-- SELECT id, 'キー', '値' FROM entries WHERE cite_key = '文献キー';
+
+-- 例: 'Ohsu2024' に PDFパスを登録する
+INSERT INTO extras (entry_id, extra_key, extra_value)
+SELECT id, 'file', '/docs/papers/ohsu2024.pdf' 
+FROM entries 
+WHERE cite_key = 'Ohsu2024';
+
+-- 例: 'Knuth1984' にメモを追加する
+INSERT INTO extras (entry_id, extra_key, extra_value)
+SELECT id, 'memo', '必読文献' 
+FROM entries 
+WHERE cite_key = 'Knuth1984';
+
+```
+
+> **解説**: この SQL は `JOIN` を使いません。
+> `SELECT id ... FROM entries WHERE ...` の部分で、指定した文献キーに対応する内部 ID を取得し、それをそのまま `INSERT` 文の値として利用しています。
+> これにより、「IDを検索」→「IDを使って登録」という2段階の手順を1回で済ませることができます。
+
+**確認方法:**
+
+```bash
+sqlite3 -header -column $BIBDB_PATH "
+SELECT e.cite_key, x.extra_key, x.extra_value 
+FROM extras x JOIN entries e ON x.entry_id = e.id 
+WHERE e.cite_key = 'Ohsu2024';"
+
+```
+
 
 ## 運用フロー例: Word での論文執筆 (Pandoc連携)
 
@@ -218,6 +265,7 @@ pandoc input.md --bibliography=temp.bib --csl=apa.csl -o reference_list.docx
 
 * **entries テーブル**: 文献IDとタイプ (`article`, `book` 等) を管理。
 * **fields テーブル**: 文献ごとの詳細フィールド (`author`, `title`, `yomi` 等) を Key-Value 形式で保存。
+* **extras テーブル**: ユーザー固有の付加情報。`import` の影響を受けず、`dedup` 時には安全にマージされます。
 
 ```sql
 -- 例: 日本語の読み(yomi)がある文献を探す
