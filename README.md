@@ -339,21 +339,20 @@ bibdb import <bibfile> [--force|-f]
 ### `bibdb export` — Export DB entries to BibTeX
 
 ```bash
-bibdb export [--keys|-k <file>] [--all|-a]
+bibdb export [--keys|-k <file>]
 # または（stdin）
 ```
 
 | Arg                | Required | Description               |
 | ------------------ | -------: | ------------------------- |
 | --keys / -k <file> |       No | CiteKey を1行1件で書いたファイル     |
-| --all / -a         |       No | 全件を出力                     |
 | stdin              |       No | tty でない場合、stdin からキー列挙を読む |
 
 **優先順位（概念）**
 
-1. `--all` があれば全件
-2. `--keys` があればファイルから
-3. それ以外で stdin があれば stdin から
+1. `--keys` があればファイルから
+2. stdin があれば stdin から
+3. それ以外であれば全件
 
 ---
 
