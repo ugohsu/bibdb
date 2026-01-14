@@ -116,10 +116,15 @@ def upsert_entry(conn, entry, force=False):
         return
 
     # 入力データの整形
+    # NOTE: ENTRYTYPE は entries.entry_type に保存するため、fields 側には入れない
     new_data = {'ENTRYTYPE': new_type}
     for k, v in entry.items():
-        if k == 'ID': continue
-        new_data[k.lower()] = str(v).strip()
+        if k is None:
+            continue
+        kk = str(k).strip()
+        if kk.upper() in ("ID", "ENTRYTYPE"):
+            continue
+        new_data[kk.lower()] = str(v).strip()
 
     entry_id, db_data = get_db_entry_dict(cur, cite_key)
 
@@ -236,16 +241,16 @@ def cmd_export(args):
     cur = conn.cursor()
     target_keys = []
 
-    if args.all:
-        cur.execute("SELECT cite_key FROM entries")
-        target_keys = [row[0] for row in cur.fetchall()]
-    elif args.keys:
+    if args.keys:
         with open(args.keys, 'r', encoding='utf-8') as f:
             target_keys = [line.strip() for line in f if line.strip()]
     else:
-        # パイプ入力対応
+        # stdin があればそれを使う。なければ全件
         if not sys.stdin.isatty():
             target_keys = [line.strip() for line in sys.stdin if line.strip()]
+        else:
+            cur.execute("SELECT cite_key FROM entries")
+            target_keys = [row[0] for row in cur.fetchall()]
 
     for key in target_keys:
         bib_str = get_bib_entry_str(cur, key)
@@ -531,7 +536,6 @@ def main():
     # Command: export
     parser_export = subparsers.add_parser("export", help="Export DB entries to BibTeX")
     parser_export.add_argument("--keys", "-k", help="File with list of cite keys (one per line)")
-    parser_export.add_argument("--all", "-a", action="store_true", help="Export all entries")
     parser_export.set_defaults(func=cmd_export)
 
     # Command: dedup
