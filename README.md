@@ -197,7 +197,7 @@ BibTeX ファイルには含まれない情報（PDFのパス、重要度、メ�
 `extras` に対するデータの読み込み・編集・書き出し・削除などに関するサブコマンドは一切用意していません。
 SQL クエリを活用して編集することを想定しています。
 
-**(例) 文献キーを使ってデータを追加する**
+### (例) 文献キーを使ってデータを追加する
 
 ```sql
 -- 基本構文:
@@ -215,6 +215,45 @@ INSERT INTO extras (entry_id, extra_key, extra_value)
 SELECT id, 'memo', '必読文献' 
 FROM entries 
 WHERE cite_key = 'Knuth1984';
+
+```
+
+### (例) 任意の文献キーの extras を一覧する
+
+コマンドラインのワンライナーだけで完結させることも可能であるが、以下のようなフローにしておくとメンテナンスしやすくなります。
+
+1. SQL クエリファイルの作成
+
+例えば `select_extras.sql` という名前で以下の内容を保存します。
+
+```sql
+-- select_extras.sql
+
+-- 1. タブ区切りモードに設定（キーにスペースが含まれる場合の対策など）
+.mode tabs
+
+-- 2. 一時テーブルを作成
+CREATE TEMPORARY TABLE selected_keys (key TEXT);
+
+-- 3. 標準入力 (/dev/stdin) からデータを一時テーブルに流し込む
+.import /dev/stdin selected_keys
+
+-- 4. 表示を見やすく整形して出力
+.headers on
+.mode column
+SELECT e.cite_key, x.extra_key, x.extra_value 
+FROM extras x 
+JOIN entries e ON x.entry_id = e.id 
+JOIN selected_keys s ON e.cite_key = s.key;
+
+```
+
+2. コマンドラインの実行
+
+パイプラインの最後で `sqlite3` を呼び出す際、ダブルクォートのなかで `.read ファイル名` を指定します。
+
+```bash
+[文献キーを抽出する手続き] | sqlite3 $BIBDB_PATH ".read select_extras.sql"
 
 ```
 
