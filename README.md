@@ -48,6 +48,40 @@ export BIBDB_PATH="$HOME/Dropbox/refs.db"
 
 設定後、シェルを再読み込みすれば `bibdb` は自動的にそのパスを参照します。
 
+### 複数の DB を使い分ける
+
+プロジェクトごとや共同研究者との共有ディレクトリに別の DB を置く場合は、`$BIBDB_PATH` をその都度上書きします。
+
+**カレントディレクトリの DB を一時的に使う:**
+
+```bash
+export BIBDB_PATH=$(realpath project.db)
+bibdb list
+bibdb import new.bib
+```
+
+`realpath` で絶対パスに変換しているため、その後 `cd` で移動しても正しく参照されます。
+
+**シェル関数として登録する（頻繁に使う場合）:**
+
+```bash
+# .bashrc / .zshrc に追記
+collab() { BIBDB_PATH=/shared/collab/refs.db bibdb "$@"; }
+```
+
+```bash
+collab list | fzf
+collab import new.bib
+```
+
+**デフォルト DB に戻すには:**
+
+```bash
+unset BIBDB_PATH  # ~/refs.db に戻る
+# または
+export BIBDB_PATH="$HOME/Dropbox/refs.db"
+```
+
 ## 使い方
 
 `bibdb` はサブコマンド形式 (`import`, `export`, `dedup`, `list`, `delete`) で動作します。
