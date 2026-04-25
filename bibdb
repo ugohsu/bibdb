@@ -193,10 +193,133 @@ def _parse_bib_file(filepath):
             
     return entries
 
+def _upsert_db_entry_fields(conn, cite_key, entry_type, added_at, src_fields, force=False):
+    """DB インポート用: fields のコンフリクト解決（added_at を元の値で保持）"""
+    cur = conn.cursor()
+    new_data = {'ENTRYTYPE': entry_type}
+    new_data.update(src_fields)
+
+    entry_id, db_data = get_db_entry_dict(cur, cite_key)
+
+    if not entry_id:
+        print(f"[NEW] Adding {cite_key}...")
+        cur.execute(
+            "INSERT INTO entries (cite_key, entry_type, added_at) VALUES (?, ?, ?)",
+            (cite_key, entry_type, added_at),
+        )
+        entry_id = cur.lastrowid
+        for k, v in src_fields.items():
+            cur.execute(
+                "INSERT INTO fields (entry_id, field_key, field_value) VALUES (?, ?, ?)",
+                (entry_id, k, v),
+            )
+        conn.commit()
+        return
+
+    if db_data == new_data:
+        return
+
+    if force:
+        choice = 'o'
+    else:
+        show_diff(cite_key, db_data, new_data)
+        while True:
+            choice = input("Action? [o]verwrite / [s]kip : ").lower()
+            if choice in ['o', 's']:
+                break
+
+    if choice == 'o':
+        print(f"-> Overwriting {cite_key}...")
+        cur.execute("UPDATE entries SET entry_type = ? WHERE id = ?", (entry_type, entry_id))
+        cur.execute("DELETE FROM fields WHERE entry_id = ?", (entry_id,))
+        for k, v in src_fields.items():
+            cur.execute(
+                "INSERT INTO fields (entry_id, field_key, field_value) VALUES (?, ?, ?)",
+                (entry_id, k, v),
+            )
+        conn.commit()
+    else:
+        print(f"-> Skipped {cite_key}")
+
+
+def _merge_extras_lossless(conn, cite_key, src_extras):
+    """cite_key に対して src_extras を lossless マージする（dedup と同一方針）"""
+    if not src_extras:
+        return
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM entries WHERE cite_key = ?", (cite_key,))
+    row = cur.fetchone()
+    if not row:
+        return
+    entry_id = row[0]
+
+    cur.execute("SELECT extra_key, extra_value FROM extras WHERE entry_id = ?", (entry_id,))
+    existing = set(cur.fetchall())
+
+    added = 0
+    for k, v in src_extras:
+        if (k, v) not in existing:
+            cur.execute(
+                "INSERT INTO extras (entry_id, extra_key, extra_value) VALUES (?, ?, ?)",
+                (entry_id, k, v),
+            )
+            added += 1
+    if added:
+        conn.commit()
+
+
+def _import_from_db(args):
+    """bibdb 互換 .db ファイルをターゲット DB にインポートする"""
+    src_path = args.bibfile
+
+    src_conn = sqlite3.connect(src_path)
+    src_cur = src_conn.cursor()
+
+    # スキーマ互換チェック（必須テーブルの存在確認）
+    src_cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = {row[0] for row in src_cur.fetchall()}
+    missing = {'entries', 'fields', 'extras'} - tables
+    if missing:
+        src_conn.close()
+        sys.exit(f"Error: Source DB is missing required tables: {', '.join(sorted(missing))}")
+
+    src_cur.execute("SELECT id, cite_key, entry_type, added_at FROM entries")
+    src_entries = src_cur.fetchall()
+
+    conn = get_connection()
+    init_db(conn)
+
+    print(f"Reading {src_path}...")
+    print(f"Processing {len(src_entries)} entries from {src_path}...")
+    print(f"Target DB: {DB_PATH}")
+
+    for src_id, cite_key, entry_type, added_at in src_entries:
+        src_cur.execute(
+            "SELECT field_key, field_value FROM fields WHERE entry_id = ?", (src_id,)
+        )
+        src_fields = {k: v for k, v in src_cur.fetchall()}
+
+        src_cur.execute(
+            "SELECT extra_key, extra_value FROM extras WHERE entry_id = ?", (src_id,)
+        )
+        src_extras = src_cur.fetchall()
+
+        _upsert_db_entry_fields(conn, cite_key, entry_type, added_at, src_fields, args.force)
+        _merge_extras_lossless(conn, cite_key, src_extras)
+
+    src_conn.close()
+    conn.close()
+    print("Done.")
+
+
 def cmd_import(args):
+    if args.bibfile.endswith('.db'):
+        _import_from_db(args)
+        return
+
     if not BIBTEXPARSER_AVAILABLE:
         sys.exit("Error: 'bibtexparser' module is required. (apt install python3-bibtexparser)")
-        
+
     conn = get_connection()
     init_db(conn)
 
@@ -208,10 +331,10 @@ def cmd_import(args):
 
     print(f"Processing {len(entries)} entries from {args.bibfile}...")
     print(f"Target DB: {DB_PATH}")
-    
+
     for entry in entries:
         upsert_entry(conn, entry, force=args.force)
-    
+
     conn.close()
     print("Done.")
 
@@ -533,7 +656,7 @@ def main():
 
     # Command: import
     parser_import = subparsers.add_parser("import", help="Import .bib file into DB")
-    parser_import.add_argument("bibfile", help="Input .bib file path")
+    parser_import.add_argument("bibfile", help="Input .bib or .db file path")
     parser_import.add_argument("--force", "-f", action="store_true", help="Force overwrite conflicts")
     parser_import.set_defaults(func=cmd_import)
 

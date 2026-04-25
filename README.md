@@ -7,8 +7,8 @@
 
 ## 特徴
 
-* **安全なインポート (Git-like Conflict Resolution)**: 既存データと異なる内容をインポートする際、差分を表示して「上書き(Overwrite)」か「スキップ(Skip)」かを選択できます。
-* **Lossless 重複整理**: 重複エントリをマージする際、片方にしかない独自情報（メモなど）は自動的に移動・統合され、情報は失われません。
+* **安全なインポート (Git-like Conflict Resolution)**: `.bib` ファイルまたは bibdb 互換の `.db` ファイルをインポートできます。既存データと異なる内容がある場合は差分を表示して「上書き(Overwrite)」か「スキップ(Skip)」かを選択できます。
+* **Lossless 重複整理**: 重複エントリをマージする際、片方にしかない独自情報（メモなど）は自動的に移動・統合され、情報は失われません。`.db` インポート時も同じ方針で extras が統合されます。
 * **bibdb 自体は高級な機能を持たない**: `fzf` (文献絞り込みに活用) や `pandoc` (`.bib` 形式の文献情報を word 掲載用に変換) などのツールと連携しやすい出力形式をとっています。
 
 ## 必要要件
@@ -88,15 +88,17 @@ export BIBDB_PATH="$HOME/Dropbox/refs.db"
 
 ### 1. データのインポート (`import`)
 
-`.bib` ファイルをデータベースに取り込みます。
+`.bib` ファイルまたは bibdb 互換の `.db` ファイルをデータベースに取り込みます。
+引数の拡張子で自動判定します。
 
 ```bash
-bibdb import my_references.bib
+bibdb import my_references.bib   # BibTeX ファイルから
+bibdb import shared.db           # bibdb 互換 .db ファイルから
 
 ```
 
 * **新規エントリ**: 自動的に追加されます。
-* **既存エントリ（差分なし）**: 何もしません（IDは維持されます）。
+* **既存エントリ（差分なし）**: fields はスキップします。
 * **既存エントリ（差分あり）**: コンフリクトが検知され、Diff が表示されます。
 
 **コンフリクト解消の例:**
@@ -111,6 +113,25 @@ Action? [o]verwrite / [s]kip :
 ```
 
 * `--force` または `-f` オプションを付けると、確認なしですべて上書きします。
+
+#### `.db` インポートの追加動作
+
+`.bib` インポートと異なる点が2つあります。
+
+* **`extras` の lossless マージ**: fields が差分なし・skip のいずれの場合でも、インポート元の `extras`（タグ・メモ・ファイルリンク等）が常にマージされます。既存の extras は削除されません。
+* **`added_at` の保持**: インポート元 DB の登録日時をそのまま引き継ぎます（`.bib` インポートは常に現在時刻になります）。
+
+**典型的なユースケース:**
+
+```bash
+# bibweb でエクスポートした .db を自分の DB に取り込む
+bibdb import shared.db
+
+# 複数の .db を順番にマージして 1 つの DB に集約する
+bibdb import project_a.db
+bibdb import project_b.db
+
+```
 
 ### 2. データのエクスポート (`export`)
 
@@ -391,21 +412,23 @@ bibdb <command> [options]
 
 ---
 
-### `bibdb import` — Import .bib file into DB
+### `bibdb import` — Import .bib or .db file into DB
 
 ```bash
 bibdb import <bibfile> [--force|-f]
 ```
 
-| Arg          | Required | Description          |
-| ------------ | -------: | -------------------- |
-| bibfile      |      Yes | 入力 `.bib` ファイルパス     |
-| --force / -f |       No | コンフリクト時の確認をスキップして上書き |
+| Arg          | Required | Description               |
+| ------------ | -------: | ------------------------- |
+| bibfile      |      Yes | 入力 `.bib` または `.db` ファイルパス |
+| --force / -f |       No | コンフリクト時の確認をスキップして上書き     |
 
 **挙動メモ**
 
-* CiteKey（BibTeX の `ID`）が新規なら `entries` + `fields` に追加。
-* 既存で差分があれば、通常は diff を出して overwrite/skip を選択（`--force` で全 overwrite）。
+* 拡張子が `.db` であれば bibdb 互換 DB インポートとして動作し、それ以外は `.bib` インポートとして動作します。
+* CiteKey が新規なら `entries` + `fields` + `extras` をすべて追加。
+* 既存で差分があれば diff を表示して overwrite/skip を選択（`--force` で全 overwrite）。
+* **`.db` インポート限定**: overwrite/skip いずれの場合も `extras` は常に lossless マージされます。`added_at` はインポート元の値を保持します。
 
 ---
 
