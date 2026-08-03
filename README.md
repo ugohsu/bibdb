@@ -390,7 +390,7 @@ pandoc input.md --bibliography=temp.bib --csl=apa.csl -o reference_list.docx
 
 ### Table: `figure_notes` (図表メモ; 画像添付)
 
-実証研究では表・図・数式の読解が本文以上に重要になることが多いため、`bibweb` の「図表」タブ（Info タブと Markdown タブの間）から、論文中の図表のスクリーンショットとメモを直接貼り付けられるようにするための専用テーブルです。
+実証研究では表・図・数式の読解が本文以上に重要になることが多いため、`bibweb` の「Exhibits」タブ（Info タブと Markdown タブの間）から、論文中の図表のスクリーンショットとメモを直接貼り付けられるようにするための専用テーブルです。
 `extras` は値が TEXT のみの key-value テーブルで、画像バイナリ・表示順を自然に表現できないため、`extras` を拡張するのではなく別テーブルとして追加しています。
 
 | Column | Type | Constraints | Notes |
