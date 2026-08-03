@@ -399,7 +399,7 @@ pandoc input.md --bibliography=temp.bib --csl=apa.csl -o reference_list.docx
 | entry_id | INTEGER | NOT NULL, FOREIGN KEY → entries(id) ON DELETE CASCADE | 親エントリ |
 | label | TEXT |  | 例: `Fig. 3`, `Table 2`（自由記述） |
 | memo | TEXT |  | ユーザーのメモ・解釈 |
-| image_data | BLOB |  | 画像本体。**圧縮・リサイズは行わない**（原寸のまま保存） |
+| image_data | BLOB |  | 画像本体。bibdb 自体は中身を加工しない（保存されるバイト列の形式は書き込み元次第。`bibweb` は PNG パレット削減のみ行い、リサイズはしない。詳細は [bibweb の README](https://github.com/ugohsu/bibweb) 参照） |
 | image_mime | TEXT |  | 例: `image/png` |
 | sort_order | INTEGER | NOT NULL DEFAULT 0 | 表示順。`bibweb` の GUI から後から並べ替え可能 |
 | created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP | 登録日時 |
@@ -408,7 +408,7 @@ pandoc input.md --bibliography=temp.bib --csl=apa.csl -o reference_list.docx
 - `figure_notes` も `extras` と同様、`bibdb` のサブコマンドでは編集しません（画像添付は `bibweb` の GUI から行う運用を想定）。
 - `dedup` と `.db` インポートでは `extras` と同じ方針で **Lossless** に統合されます（[Table: `extras`](#table-extras-ユーザー独自データ-key-value) 参照）。
 - `delete` では **ON DELETE CASCADE** により、紐づく `figure_notes` も削除されます。
-- 無圧縮の画像を貼り付けていくと DB ファイルが大きくなりやすい点に注意してください（Dropbox 等で同期している場合は特に）。
+- 画像を貼り付けていくと DB ファイルは大きくなっていきます（`bibweb` 側でパレット削減はするがリサイズはしないため）。Dropbox 等で同期している場合は特に注意してください。
 
 ---
 
