@@ -8,7 +8,7 @@
 ## 特徴
 
 * **安全なインポート (Git-like Conflict Resolution)**: `.bib` ファイルまたは bibdb 互換の `.db` ファイルをインポートできます。既存データと異なる内容がある場合は差分を表示して「上書き(Overwrite)」か「スキップ(Skip)」かを選択できます。
-* **Lossless 重複整理**: 重複エントリをマージする際、片方にしかない独自情報（メモなど）は自動的に移動・統合され、情報は失われません。`.db` インポート時も同じ方針で extras が統合されます。
+* **Lossless 重複整理**: 重複エントリをマージする際、片方にしかない独自情報（メモ・図表メモなど）は自動的に移動・統合され、情報は失われません。`.db` インポート時も同じ方針で `extras` / `figure_notes` が統合されます。
 * **bibdb 自体は高級な機能を持たない**: `fzf` (文献絞り込みに活用) や `pandoc` (`.bib` 形式の文献情報を word 掲載用に変換) などのツールと連携しやすい出力形式をとっています。
 
 ## 必要要件
@@ -118,7 +118,7 @@ Action? [o]verwrite / [s]kip :
 
 `.bib` インポートと異なる点が2つあります。
 
-* **`extras` の lossless マージ**: fields が差分なし・skip のいずれの場合でも、インポート元の `extras`（タグ・メモ・ファイルリンク等）が常にマージされます。既存の extras は削除されません。
+* **`extras` / `figure_notes` の lossless マージ**: fields が差分なし・skip のいずれの場合でも、インポート元の `extras`（タグ・メモ・ファイルリンク等）と `figure_notes`（図表メモの画像・キャプション）が常にマージされます。既存データは削除されません。インポート元 DB に `figure_notes` テーブルが無い（bibweb でこの機能を使う前に作られた古い `.db`）場合は、単にスキップされます。
 * **`added_at` の保持**: インポート元 DB の登録日時をそのまま引き継ぎます（`.bib` インポートは常に現在時刻になります）。
 
 **典型的なユースケース:**
@@ -176,7 +176,7 @@ bibdb dedup
 * **判定基準**: DOI の完全一致、またはタイトルの類似度。
 * **Lossless Merge**:
     * BibTeX情報が重複している場合、片方を残して削除します。
-    * **ユーザー独自データ（メモ等）は、削除される側から残す側へ自動的に移動・統合されます。** これにより、マージによって貴重なメモが消えることを防ぎます。
+    * **ユーザー独自データ（メモ・図表メモ等）は、削除される側から残す側へ自動的に移動・統合されます。** これにより、マージによって貴重なメモが消えることを防ぎます。図表メモ（`figure_notes`）の並び順は、残す側の既存メモの後ろに追加される形で再採番されます。
 
 **オプション:**
 
@@ -242,7 +242,7 @@ bibdb list | fzf -m | awk '{print $1}' | bibdb delete
 
 * **確認メッセージ**: デフォルトでは削除前に確認プロンプト (`Proceed? [y/N]`) が表示されます。
 * `--force` または `-f` オプションを付けると、確認なしで即座に削除します。
-* **Cascade Delete**: 文献を削除すると、その文献に紐付いているユーザー独自データ（`extras` テーブル内のメモやパスなど）も**自動的に削除**されます。ゴミデータは残りません。
+* **Cascade Delete**: 文献を削除すると、その文献に紐付いているユーザー独自データ（`extras` テーブル内のメモやパス、`figure_notes` テーブル内の図表メモや画像など）も**自動的に削除**されます。ゴミデータは残りません。
 
 ## ユーザー独自データの管理 (`extras` テーブルの活用)
 
@@ -338,7 +338,7 @@ pandoc input.md --bibliography=temp.bib --csl=apa.csl -o reference_list.docx
 
 ## Database Schema (SQLite)
 
-`bibdb` が作成・利用するテーブルは `entries`, `fields`, `extras` の3つです。
+`bibdb` が作成・利用するテーブルは `entries`, `fields`, `extras`, `figure_notes` の4つです。
 
 
 ---
@@ -388,6 +388,30 @@ pandoc input.md --bibliography=temp.bib --csl=apa.csl -o reference_list.docx
 
 ---
 
+### Table: `figure_notes` (図表メモ; 画像添付)
+
+実証研究では表・図・数式の読解が本文以上に重要になることが多いため、`bibweb` の「図表」タブ（Info タブと Markdown タブの間）から、論文中の図表のスクリーンショットとメモを直接貼り付けられるようにするための専用テーブルです。
+`extras` は値が TEXT のみの key-value テーブルで、画像バイナリ・表示順を自然に表現できないため、`extras` を拡張するのではなく別テーブルとして追加しています。
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| id | INTEGER | PRIMARY KEY AUTOINCREMENT | 内部ID |
+| entry_id | INTEGER | NOT NULL, FOREIGN KEY → entries(id) ON DELETE CASCADE | 親エントリ |
+| label | TEXT |  | 例: `Fig. 3`, `Table 2`（自由記述） |
+| memo | TEXT |  | ユーザーのメモ・解釈 |
+| image_data | BLOB |  | 画像本体。**圧縮・リサイズは行わない**（原寸のまま保存） |
+| image_mime | TEXT |  | 例: `image/png` |
+| sort_order | INTEGER | NOT NULL DEFAULT 0 | 表示順。`bibweb` の GUI から後から並べ替え可能 |
+| created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP | 登録日時 |
+
+**設計意図**
+- `figure_notes` も `extras` と同様、`bibdb` のサブコマンドでは編集しません（画像添付は `bibweb` の GUI から行う運用を想定）。
+- `dedup` と `.db` インポートでは `extras` と同じ方針で **Lossless** に統合されます（[Table: `extras`](#table-extras-ユーザー独自データ-key-value) 参照）。
+- `delete` では **ON DELETE CASCADE** により、紐づく `figure_notes` も削除されます。
+- 無圧縮の画像を貼り付けていくと DB ファイルが大きくなりやすい点に注意してください（Dropbox 等で同期している場合は特に）。
+
+---
+
 ### 重要ポイント（Unique 制約の違い）
 
 - **`entries.cite_key` は UNIQUE**
@@ -397,6 +421,8 @@ pandoc input.md --bibliography=temp.bib --csl=apa.csl -o reference_list.docx
 - **`extras` には UNIQUE 制約がない**
   - **1つの文献（entry_id）に同じ extra_key を複数持てます**（例：`memo` を複数行で保存、`file` を複数登録、などが可能）。
   - これは「ユーザー独自データを自由に積める」設計です（ただし、重複管理はユーザー側の運用で行います）。
+- **`figure_notes` にも UNIQUE 制約がない**
+  - 1つの文献に何件でも図表メモを持てます。表示順は `sort_order` で管理し、値自体には一意性を要求しません。
 
 ---
 
@@ -426,9 +452,9 @@ bibdb import <bibfile> [--force|-f]
 **挙動メモ**
 
 * 拡張子が `.db` であれば bibdb 互換 DB インポートとして動作し、それ以外は `.bib` インポートとして動作します。
-* CiteKey が新規なら `entries` + `fields` + `extras` をすべて追加。
+* CiteKey が新規なら `entries` + `fields` + `extras` + `figure_notes` をすべて追加。
 * 既存で差分があれば diff を表示して overwrite/skip を選択（`--force` で全 overwrite）。
-* **`.db` インポート限定**: overwrite/skip いずれの場合も `extras` は常に lossless マージされます。`added_at` はインポート元の値を保持します。
+* **`.db` インポート限定**: overwrite/skip いずれの場合も `extras` / `figure_notes` は常に lossless マージされます。`added_at` はインポート元の値を保持します。インポート元 DB に `figure_notes` テーブルが無ければそこはスキップされます（古い `.db` との互換性維持）。
 
 ---
 
@@ -471,6 +497,7 @@ bibdb dedup [--threshold|-t <float>]
 
 * `fields`: keep 側に存在しない field_key だけを追加
 * `extras`: keep 側に同一 `(extra_key, extra_value)` がないものだけを移動
+* `figure_notes`: 削除される側の全メモを keep 側へ付け替え、`sort_order` は keep 側の末尾に再採番
 
 ---
 

@@ -73,6 +73,19 @@ def init_db(conn):
         FOREIGN KEY(entry_id) REFERENCES entries(id) ON DELETE CASCADE
     )
     """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS figure_notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entry_id INTEGER NOT NULL,
+        label TEXT,
+        memo TEXT,
+        image_data BLOB,
+        image_mime TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(entry_id) REFERENCES entries(id) ON DELETE CASCADE
+    )
+    """)
     conn.commit()
 
 # -----------------------------------------------------------------------------
@@ -268,6 +281,42 @@ def _merge_extras_lossless(conn, cite_key, src_extras):
         conn.commit()
 
 
+def _merge_figure_notes_lossless(conn, cite_key, src_notes):
+    """cite_key に対して src_notes (label, memo, image_data, image_mime, sort_order) を
+    lossless マージする（完全一致する画像メモは重複追加しない、dedup と同一方針）"""
+    if not src_notes:
+        return
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM entries WHERE cite_key = ?", (cite_key,))
+    row = cur.fetchone()
+    if not row:
+        return
+    entry_id = row[0]
+
+    cur.execute(
+        "SELECT label, memo, image_data, image_mime FROM figure_notes WHERE entry_id = ?",
+        (entry_id,),
+    )
+    existing = set(cur.fetchall())
+
+    cur.execute("SELECT MAX(sort_order) FROM figure_notes WHERE entry_id = ?", (entry_id,))
+    next_order = (cur.fetchone()[0] or -1) + 1
+
+    added = 0
+    for label, memo, image_data, image_mime, _src_order in src_notes:
+        if (label, memo, image_data, image_mime) in existing:
+            continue
+        cur.execute(
+            "INSERT INTO figure_notes (entry_id, label, memo, image_data, image_mime, sort_order) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (entry_id, label, memo, image_data, image_mime, next_order),
+        )
+        next_order += 1
+        added += 1
+    if added:
+        conn.commit()
+
+
 def _import_from_db(args):
     """bibdb 互換 .db ファイルをターゲット DB にインポートする"""
     src_path = args.bibfile
@@ -276,12 +325,14 @@ def _import_from_db(args):
     src_cur = src_conn.cursor()
 
     # スキーマ互換チェック（必須テーブルの存在確認）
+    # figure_notes は新しめのテーブルなので任意（無ければ画像メモなしのDBとして扱う）
     src_cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
     tables = {row[0] for row in src_cur.fetchall()}
     missing = {'entries', 'fields', 'extras'} - tables
     if missing:
         src_conn.close()
         sys.exit(f"Error: Source DB is missing required tables: {', '.join(sorted(missing))}")
+    has_figure_notes = 'figure_notes' in tables
 
     src_cur.execute("SELECT id, cite_key, entry_type, added_at FROM entries")
     src_entries = src_cur.fetchall()
@@ -306,6 +357,15 @@ def _import_from_db(args):
 
         _upsert_db_entry_fields(conn, cite_key, entry_type, added_at, src_fields, args.force)
         _merge_extras_lossless(conn, cite_key, src_extras)
+
+        if has_figure_notes:
+            src_cur.execute(
+                "SELECT label, memo, image_data, image_mime, sort_order "
+                "FROM figure_notes WHERE entry_id = ?",
+                (src_id,),
+            )
+            src_notes = src_cur.fetchall()
+            _merge_figure_notes_lossless(conn, cite_key, src_notes)
 
     src_conn.close()
     conn.close()
@@ -426,7 +486,20 @@ def merge_entries(conn, keep_id, delete_id):
     for ex_id, k, v in cur.fetchall():
         if (k, v) not in keep_extras:
             cur.execute("UPDATE extras SET entry_id = ? WHERE id = ?", (keep_id, ex_id))
-    
+
+    # Merge figure_notes (Lossless): 全件を keep_id へ付け替え、sort_order は末尾に再採番
+    cur.execute("SELECT MAX(sort_order) FROM figure_notes WHERE entry_id = ?", (keep_id,))
+    next_order = (cur.fetchone()[0] or -1) + 1
+    cur.execute(
+        "SELECT id FROM figure_notes WHERE entry_id = ? ORDER BY sort_order, id", (delete_id,)
+    )
+    for (fn_id,) in cur.fetchall():
+        cur.execute(
+            "UPDATE figure_notes SET entry_id = ?, sort_order = ? WHERE id = ?",
+            (keep_id, next_order, fn_id),
+        )
+        next_order += 1
+
     cur.execute("DELETE FROM entries WHERE id = ?", (delete_id,))
     conn.commit()
 
@@ -519,6 +592,13 @@ def cmd_dedup(args):
                         elif choice == 's':
                             print("-> Skipped.")
                             break
+
+                    if choice == 'b':
+                        # entries[i] (a) はDBから削除済み。同じiに対する残りのjとの
+                        # 比較を続けると、削除済みentry_idをget_entry_full_dataで
+                        # 引いてクラッシュする（3件以上の重複クラスタで発生）ため、
+                        # このiについての内側ループはここで打ち切る。
+                        break
     finally:
         conn.close()
 
