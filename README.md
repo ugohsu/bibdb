@@ -84,7 +84,7 @@ export BIBDB_PATH="$HOME/Dropbox/refs.db"
 
 ## 使い方
 
-`bibdb` はサブコマンド形式 (`import`, `export`, `dedup`, `list`, `delete`) で動作します。
+`bibdb` はサブコマンド形式 (`import`, `export`, `dedup`, `list`, `delete`, `set-extra`) で動作します。
 
 ### 1. データのインポート (`import`)
 
@@ -249,10 +249,32 @@ bibdb list | fzf -m | awk '{print $1}' | bibdb delete
 BibTeX ファイルには含まれない情報（PDFのパス、重要度、メモなど）は、`extras` テーブルで管理します。
 この設計により、bibdb は「BibTeX の正規管理」と「ユーザーの思考・運用ログ」を明確に分離します。
 
-`extras` に対するデータの読み込み・編集・書き出し・削除などに関するサブコマンドは一切用意していません。
-SQL クエリを活用して編集することを想定しています。
+`extras` の一覧・編集・削除といった一般的な操作に関するサブコマンドは用意していません。SQL クエリを活用することを想定しています。
 
-### (例) 文献キーを使ってデータを追加する
+ただし、標準入力から1件だけ値を書き込む `set-extra` サブコマンドのみ例外的に用意しています。`sqlite3` で直接 `INSERT` しようとすると、複数行や引用符を含むテキスト（Markdown の要約など）はエスケープが煩雑になるため、パイプで値を渡せる書き込み専用のコマンドとして追加しました。
+
+### (例) `set-extra` で Markdown の要約を登録する
+
+```bash
+# 標準入力の内容をそのまま md.digest として登録する（末尾の改行は1つだけ除去されます）
+some_command | bibdb set-extra Knuth1984 md.digest
+
+# 同じ (cite_key, extra_key) の組がすでに存在する場合はデフォルトではエラーになる
+# （誤って上書き・重複させないためのガード）
+
+# --append: 別行として追加する（tags や file のように複数値を持たせたいとき）
+echo "must-read" | bibdb set-extra Knuth1984 tags --append
+
+# --replace: 既存の値をすべて削除してから新しい値を1件だけ登録する
+some_command | bibdb set-extra Knuth1984 md.digest --replace
+
+# --replace の時点で (cite_key, extra_key) の組がすでに2件以上重複している場合は --force が必要
+some_command | bibdb set-extra Knuth1984 md.digest --replace --force
+```
+
+詳細は [CLI Reference](#bibdb-set-extra--set-an-extras-value-from-stdin) を参照してください。
+
+### (例) SQL で直接データを追加する（一覧・複数件の一括操作など）
 
 ```sql
 -- 基本構文:
@@ -434,7 +456,7 @@ pandoc input.md --bibliography=temp.bib --csl=apa.csl -o reference_list.docx
 bibdb <command> [options]
 ```
 
-サブコマンドは `import`, `export`, `dedup`, `list`, `delete` です。
+サブコマンドは `import`, `export`, `dedup`, `list`, `delete`, `set-extra` です。
 
 ---
 
@@ -531,6 +553,42 @@ bibdb delete [KEY1 KEY2 ...] [--keys|-k <file>] [--force|-f]
 
 * `--force` がない場合、削除前に確認プロンプトが出ます。
 * ON DELETE CASCADE により、対象 `entries` を消すと、その `fields` / `extras` も同時に削除されます。
+
+---
+
+### `bibdb set-extra` — Set an extras value from stdin
+
+```bash
+bibdb set-extra <cite_key> <extra_key> [--append | --replace] [--force|-f]
+```
+
+| Arg          | Required | Description                                         |
+| ------------ | -------: | ---------------------------------------------------- |
+| cite_key     |      Yes | 対象の CiteKey                                          |
+| extra_key    |      Yes | `extras.extra_key`（例: `md.digest`, `memo`, `tags`）    |
+| --append     |       No | 既存行があっても新しい行として追加する（複数値を許容する extra_key 向け）             |
+| --replace    |       No | 既存行をすべて削除してから新しい値を1件だけ挿入する                            |
+| --force / -f |       No | `--replace` の時点で対象の組が2件以上重複している場合に必須                  |
+| stdin        |      Yes | `extra_value` として保存する内容（末尾の改行は1つだけ除去される）              |
+
+**挙動メモ**
+
+* `cite_key` が存在しない場合はエラーで終了します。
+* オプションなしの場合、対象の `(cite_key, extra_key)` の組がすでに1件でも存在すればエラーで終了します（該当件数を表示）。存在しなければ1件挿入します。
+* `--append` と `--replace` は同時指定できません。
+* `--append` は既存件数に関わらず常に新しい行を1件追加します。
+* `--replace` は既存行をすべて削除してから新しい値を1件挿入します。既存が2件以上ある場合は `--force` が無いとエラーで終了します（誤って複数のメモを一括で握りつぶす事故を防ぐため）。
+* `--force` は `--replace` と同時に指定しない限りエラーになります。
+
+**典型的なユースケース: エージェント型AIによる要約の登録**
+
+```bash
+# 要約を生成させ、そのままパイプで登録する（クォートや改行のエスケープを考える必要がない）
+claude -p "Knuth1984.pdf を要約して" | bibdb set-extra Knuth1984 md.digest
+
+# 既存の要約を更新する
+claude -p "..." | bibdb set-extra Knuth1984 md.digest --replace
+```
 
 ---
 

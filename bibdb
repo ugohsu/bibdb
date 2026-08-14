@@ -728,6 +728,85 @@ def cmd_delete(args):
 
 
 # -----------------------------------------------------------------------------
+# 機能 6: Set-Extra (標準入力から extras に1件書き込む)
+# -----------------------------------------------------------------------------
+def cmd_set_extra(args):
+    if args.append and args.replace:
+        sys.exit("Error: --append and --replace cannot be used together.")
+    if args.force and not args.replace:
+        sys.exit("Error: --force is only valid together with --replace.")
+
+    conn = get_connection()
+    init_db(conn)
+    cur = conn.cursor()
+
+    cur.execute("SELECT id FROM entries WHERE cite_key = ?", (args.cite_key,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        sys.exit(f"Error: cite_key '{args.cite_key}' not found.")
+    entry_id = row[0]
+
+    value = sys.stdin.read()
+    if value.endswith('\n'):
+        value = value[:-1]
+
+    cur.execute(
+        "SELECT COUNT(*) FROM extras WHERE entry_id = ? AND extra_key = ?",
+        (entry_id, args.extra_key),
+    )
+    existing_count = cur.fetchone()[0]
+
+    if args.append:
+        cur.execute(
+            "INSERT INTO extras (entry_id, extra_key, extra_value) VALUES (?, ?, ?)",
+            (entry_id, args.extra_key, value),
+        )
+        conn.commit()
+        sys.stderr.write(
+            f"Added 1 row for ({args.cite_key}, {args.extra_key}) "
+            f"({existing_count} existing row(s) left untouched).\n"
+        )
+    elif args.replace:
+        if existing_count > 1 and not args.force:
+            conn.close()
+            sys.exit(
+                f"Error: {existing_count} existing rows found for "
+                f"({args.cite_key}, {args.extra_key}). --replace would collapse "
+                f"them into one; add --force to proceed."
+            )
+        cur.execute(
+            "DELETE FROM extras WHERE entry_id = ? AND extra_key = ?",
+            (entry_id, args.extra_key),
+        )
+        cur.execute(
+            "INSERT INTO extras (entry_id, extra_key, extra_value) VALUES (?, ?, ?)",
+            (entry_id, args.extra_key, value),
+        )
+        conn.commit()
+        sys.stderr.write(
+            f"Replaced {existing_count} existing row(s) with 1 new row for "
+            f"({args.cite_key}, {args.extra_key}).\n"
+        )
+    else:
+        if existing_count > 0:
+            conn.close()
+            sys.exit(
+                f"Error: {existing_count} existing row(s) found for "
+                f"({args.cite_key}, {args.extra_key}). Use --append to add "
+                f"another row, or --replace to overwrite."
+            )
+        cur.execute(
+            "INSERT INTO extras (entry_id, extra_key, extra_value) VALUES (?, ?, ?)",
+            (entry_id, args.extra_key, value),
+        )
+        conn.commit()
+        sys.stderr.write(f"Added 1 row for ({args.cite_key}, {args.extra_key}).\n")
+
+    conn.close()
+
+
+# -----------------------------------------------------------------------------
 # Main Parser
 # -----------------------------------------------------------------------------
 def main():
@@ -760,6 +839,26 @@ def main():
     parser_delete.add_argument("--keys", "-k", help="File with list of cite keys (one per line)")
     parser_delete.add_argument("--force", "-f", action="store_true", help="Delete without confirmation")
     parser_delete.set_defaults(func=cmd_delete)
+
+    # Command: set-extra
+    parser_set_extra = subparsers.add_parser(
+        "set-extra", help="Set an extras value (extra_key) for a cite_key from stdin"
+    )
+    parser_set_extra.add_argument("cite_key", help="Target cite key")
+    parser_set_extra.add_argument("extra_key", help="extras.extra_key to set (e.g. md.digest)")
+    parser_set_extra.add_argument(
+        "--append", action="store_true",
+        help="Insert as an additional row even if one already exists"
+    )
+    parser_set_extra.add_argument(
+        "--replace", action="store_true",
+        help="Delete existing row(s) for this (cite_key, extra_key) and insert the new value"
+    )
+    parser_set_extra.add_argument(
+        "--force", "-f", action="store_true",
+        help="With --replace, allow collapsing 2+ existing rows into one"
+    )
+    parser_set_extra.set_defaults(func=cmd_set_extra)
 
     args = parser.parse_args()
     args.func(args)
