@@ -118,7 +118,7 @@ Action? [o]verwrite / [s]kip :
 
 `.bib` インポートと異なる点が2つあります。
 
-* **`extras` / `figure_notes` の lossless マージ**: fields が差分なし・skip のいずれの場合でも、インポート元の `extras`（タグ・メモ・ファイルリンク等）と `figure_notes`（図表メモの画像・キャプション）が常にマージされます。既存データは削除されません。インポート元 DB に `figure_notes` テーブルが無い（bibweb でこの機能を使う前に作られた古い `.db`）場合は、単にスキップされます。
+* **`extras` / `figure_notes` の lossless マージ**: fields が差分なし・skip のいずれの場合でも、インポート元の `extras`（タグ・メモ・ファイルリンク等）と `figure_notes`（図表メモの画像・キャプション）が常にマージされます。既存データは削除されません。インポート元 DB に `figure_notes` テーブルが無い（bibweb でこの機能を使う前に作られた古い `.db`）場合は、単にスキップされます。同様に、インポート元 DB の `extras` に `note` カラムが無い（`note` 追加より前に作られた古い `.db`）場合は `note` を `NULL` として扱い、正常にインポートを続行します。
 * **`added_at` の保持**: インポート元 DB の登録日時をそのまま引き継ぎます（`.bib` インポートは常に現在時刻になります）。
 
 **典型的なユースケース:**
@@ -478,7 +478,7 @@ bibdb import <bibfile> [--force|-f]
 * 拡張子が `.db` であれば bibdb 互換 DB インポートとして動作し、それ以外は `.bib` インポートとして動作します。
 * CiteKey が新規なら `entries` + `fields` + `extras` + `figure_notes` をすべて追加。
 * 既存で差分があれば diff を表示して overwrite/skip を選択（`--force` で全 overwrite）。
-* **`.db` インポート限定**: overwrite/skip いずれの場合も `extras` / `figure_notes` は常に lossless マージされます。`added_at` はインポート元の値を保持します。インポート元 DB に `figure_notes` テーブルが無ければそこはスキップされます（古い `.db` との互換性維持）。
+* **`.db` インポート限定**: overwrite/skip いずれの場合も `extras` / `figure_notes` は常に lossless マージされます。`added_at` はインポート元の値を保持します。インポート元 DB に `figure_notes` テーブルが無ければそこはスキップされ、`extras` に `note` カラムが無ければ `note` を `NULL` として扱います（いずれも古い `.db` との互換性維持）。
 
 ---
 
