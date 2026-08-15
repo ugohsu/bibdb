@@ -400,12 +400,14 @@ pandoc input.md --bibliography=temp.bib --csl=apa.csl -o reference_list.docx
 | entry_id | INTEGER | FOREIGN KEY → entries(id) ON DELETE CASCADE | 親エントリ |
 | extra_key | TEXT | NOT NULL | 例: `memo`, `file`, `tag` |
 | extra_value | TEXT |  | 値（文字列） |
+| note | TEXT |  | この行についての備考・概要（任意）。複数のファイルリンクや `md.*` を持つ場合に、それぞれの用途を書き添えるためのもの。`bibweb` の Info/Markdown/Extras タブに表示される |
 | UNIQUE | — | (なし) | **同じ extra_key を複数持てる** |
 
 **設計意図**
 - `extras` は `bibdb` のサブコマンドでは編集しません（SQL で直接操作する運用を想定）。
+- `note` は `(extra_key, extra_value)` の組ごとの補足情報という位置づけで、`dedup` / `.db` インポートの重複判定には使いません（後述）。
 - `dedup` では **Lossless** に統合されます：
-  - 片方にしかない `(extra_key, extra_value)` は移動（同一ペアは重複回避）
+  - 片方にしかない `(extra_key, extra_value)` は移動（同一ペアは重複回避、`note` の差異は無視）
 - `delete` では **ON DELETE CASCADE** により、紐づく `fields` / `extras` も削除されます。
 
 ---
@@ -518,7 +520,7 @@ bibdb dedup [--threshold|-t <float>]
 **マージ方針（Lossless）**
 
 * `fields`: keep 側に存在しない field_key だけを追加
-* `extras`: keep 側に同一 `(extra_key, extra_value)` がないものだけを移動
+* `extras`: keep 側に同一 `(extra_key, extra_value)` がないものだけを移動（`note` の差異は判定に使わない）
 * `figure_notes`: 削除される側の全メモを keep 側へ付け替え、`sort_order` は keep 側の末尾に再採番
 
 ---

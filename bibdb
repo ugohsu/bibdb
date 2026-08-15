@@ -70,6 +70,7 @@ def init_db(conn):
         entry_id INTEGER,
         extra_key TEXT NOT NULL,
         extra_value TEXT,
+        note TEXT,
         FOREIGN KEY(entry_id) REFERENCES entries(id) ON DELETE CASCADE
     )
     """)
@@ -256,7 +257,8 @@ def _upsert_db_entry_fields(conn, cite_key, entry_type, added_at, src_fields, fo
 
 
 def _merge_extras_lossless(conn, cite_key, src_extras):
-    """cite_key に対して src_extras を lossless マージする（dedup と同一方針）"""
+    """cite_key に対して src_extras (extra_key, extra_value, note) を lossless マージする
+    （dedup と同一方針: 重複判定は extra_key, extra_value のみで行い、note の差異は無視する）"""
     if not src_extras:
         return
     cur = conn.cursor()
@@ -270,11 +272,11 @@ def _merge_extras_lossless(conn, cite_key, src_extras):
     existing = set(cur.fetchall())
 
     added = 0
-    for k, v in src_extras:
+    for k, v, note in src_extras:
         if (k, v) not in existing:
             cur.execute(
-                "INSERT INTO extras (entry_id, extra_key, extra_value) VALUES (?, ?, ?)",
-                (entry_id, k, v),
+                "INSERT INTO extras (entry_id, extra_key, extra_value, note) VALUES (?, ?, ?, ?)",
+                (entry_id, k, v, note),
             )
             added += 1
     if added:
@@ -334,6 +336,10 @@ def _import_from_db(args):
         sys.exit(f"Error: Source DB is missing required tables: {', '.join(sorted(missing))}")
     has_figure_notes = 'figure_notes' in tables
 
+    # extras.note は後から追加されたカラムなので、無い古い .db との互換性を保つ
+    src_cur.execute("PRAGMA table_info(extras)")
+    has_extra_note = 'note' in {row[1] for row in src_cur.fetchall()}
+
     src_cur.execute("SELECT id, cite_key, entry_type, added_at FROM entries")
     src_entries = src_cur.fetchall()
 
@@ -350,10 +356,16 @@ def _import_from_db(args):
         )
         src_fields = {k: v for k, v in src_cur.fetchall()}
 
-        src_cur.execute(
-            "SELECT extra_key, extra_value FROM extras WHERE entry_id = ?", (src_id,)
-        )
-        src_extras = src_cur.fetchall()
+        if has_extra_note:
+            src_cur.execute(
+                "SELECT extra_key, extra_value, note FROM extras WHERE entry_id = ?", (src_id,)
+            )
+            src_extras = src_cur.fetchall()
+        else:
+            src_cur.execute(
+                "SELECT extra_key, extra_value FROM extras WHERE entry_id = ?", (src_id,)
+            )
+            src_extras = [(k, v, None) for k, v in src_cur.fetchall()]
 
         _upsert_db_entry_fields(conn, cite_key, entry_type, added_at, src_fields, args.force)
         _merge_extras_lossless(conn, cite_key, src_extras)
