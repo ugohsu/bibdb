@@ -771,8 +771,8 @@ def cmd_set_extra(args):
 
     if args.append:
         cur.execute(
-            "INSERT INTO extras (entry_id, extra_key, extra_value) VALUES (?, ?, ?)",
-            (entry_id, args.extra_key, value),
+            "INSERT INTO extras (entry_id, extra_key, extra_value, note) VALUES (?, ?, ?, ?)",
+            (entry_id, args.extra_key, value, args.note),
         )
         conn.commit()
         sys.stderr.write(
@@ -792,8 +792,8 @@ def cmd_set_extra(args):
             (entry_id, args.extra_key),
         )
         cur.execute(
-            "INSERT INTO extras (entry_id, extra_key, extra_value) VALUES (?, ?, ?)",
-            (entry_id, args.extra_key, value),
+            "INSERT INTO extras (entry_id, extra_key, extra_value, note) VALUES (?, ?, ?, ?)",
+            (entry_id, args.extra_key, value, args.note),
         )
         conn.commit()
         sys.stderr.write(
@@ -809,8 +809,8 @@ def cmd_set_extra(args):
                 f"another row, or --replace to overwrite."
             )
         cur.execute(
-            "INSERT INTO extras (entry_id, extra_key, extra_value) VALUES (?, ?, ?)",
-            (entry_id, args.extra_key, value),
+            "INSERT INTO extras (entry_id, extra_key, extra_value, note) VALUES (?, ?, ?, ?)",
+            (entry_id, args.extra_key, value, args.note),
         )
         conn.commit()
         sys.stderr.write(f"Added 1 row for ({args.cite_key}, {args.extra_key}).\n")
@@ -869,6 +869,9 @@ def main():
     parser_set_extra.add_argument(
         "--force", "-f", action="store_true",
         help="With --replace, allow collapsing 2+ existing rows into one"
+    )
+    parser_set_extra.add_argument(
+        "--note", help="Optional note to store alongside the value"
     )
     parser_set_extra.set_defaults(func=cmd_set_extra)
 
