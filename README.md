@@ -270,6 +270,9 @@ some_command | bibdb set-extra Knuth1984 md.digest --replace
 
 # --replace の時点で (cite_key, extra_key) の組がすでに2件以上重複している場合は --force が必要
 some_command | bibdb set-extra Knuth1984 md.digest --replace --force
+
+# --note: extras.note に備考を添える（省略時は NULL）
+echo "https://www.dropbox.com/scl/fi/xxxx/Knuth1984.pdf" | bibdb set-extra Knuth1984 file --append --note "元論文"
 ```
 
 詳細は [CLI Reference](#bibdb-set-extra--set-an-extras-value-from-stdin) を参照してください。
@@ -561,7 +564,7 @@ bibdb delete [KEY1 KEY2 ...] [--keys|-k <file>] [--force|-f]
 ### `bibdb set-extra` — Set an extras value from stdin
 
 ```bash
-bibdb set-extra <cite_key> <extra_key> [--append | --replace] [--force|-f]
+bibdb set-extra <cite_key> <extra_key> [--append | --replace] [--force|-f] [--note NOTE]
 ```
 
 | Arg          | Required | Description                                         |
@@ -571,6 +574,7 @@ bibdb set-extra <cite_key> <extra_key> [--append | --replace] [--force|-f]
 | --append     |       No | 既存行があっても新しい行として追加する（複数値を許容する extra_key 向け）             |
 | --replace    |       No | 既存行をすべて削除してから新しい値を1件だけ挿入する                            |
 | --force / -f |       No | `--replace` の時点で対象の組が2件以上重複している場合に必須                  |
+| --note       |       No | `extras.note` に保存する備考。省略時は `NULL`                     |
 | stdin        |      Yes | `extra_value` として保存する内容（末尾の改行は1つだけ除去される）              |
 
 **挙動メモ**
@@ -581,6 +585,7 @@ bibdb set-extra <cite_key> <extra_key> [--append | --replace] [--force|-f]
 * `--append` は既存件数に関わらず常に新しい行を1件追加します。
 * `--replace` は既存行をすべて削除してから新しい値を1件挿入します。既存が2件以上ある場合は `--force` が無いとエラーで終了します（誤って複数のメモを一括で握りつぶす事故を防ぐため）。
 * `--force` は `--replace` と同時に指定しない限りエラーになります。
+* `--note` を省略すると `note` は `NULL` になります。`--replace` は行ごと削除してから作り直すため、既存行に備考が付いていても `--note` を指定し直さない限り引き継がれません。
 
 **典型的なユースケース: エージェント型AIによる要約の登録**
 
@@ -590,6 +595,9 @@ claude -p "Knuth1984.pdf を要約して" | bibdb set-extra Knuth1984 md.digest
 
 # 既存の要約を更新する
 claude -p "..." | bibdb set-extra Knuth1984 md.digest --replace
+
+# 備考（note）を添えて登録する
+claude -p "..." | bibdb set-extra Knuth1984 md.digest --replace --note "研究会報告資料"
 ```
 
 ---
