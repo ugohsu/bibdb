@@ -87,7 +87,36 @@ def init_db(conn):
         FOREIGN KEY(entry_id) REFERENCES entries(id) ON DELETE CASCADE
     )
     """)
+    # 図表メモの画像（1 つの図表メモに何枚でも）。figure_notes.image_data は後方互換のためだけに残す
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS figure_images (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        figure_id INTEGER NOT NULL,
+        image_data BLOB NOT NULL,
+        image_mime TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(figure_id) REFERENCES figure_notes(id) ON DELETE CASCADE
+    )
+    """)
+    migrate_legacy_figure_images(conn)
     conn.commit()
+
+
+def migrate_legacy_figure_images(conn):
+    """【後方互換】画像を figure_images に分ける前の DB では、画像が figure_notes.image_data に
+    1 枚だけ入っている。それを figure_images の 1 枚目に移し、元の列は NULL にする（何度呼んでもよい）。
+    bibweb の起動時にも同じ処理がある。後方互換を切るときは、この関数と呼び出し、
+    _read_src_figure_images の旧形式の読み出し、figure_notes の image_data/image_mime 列を消す。"""
+    conn.execute(
+        "INSERT INTO figure_images (figure_id, image_data, image_mime, sort_order, created_at) "
+        "SELECT id, image_data, image_mime, 0, created_at FROM figure_notes "
+        "WHERE image_data IS NOT NULL"
+    )
+    conn.execute(
+        "UPDATE figure_notes SET image_data = NULL, image_mime = NULL "
+        "WHERE image_data IS NOT NULL"
+    )
 
 # -----------------------------------------------------------------------------
 # 機能 1: Import (旧 bib2db.py)
@@ -283,9 +312,15 @@ def _merge_extras_lossless(conn, cite_key, src_extras):
         conn.commit()
 
 
+def _figure_note_key(label, memo, images):
+    """図表メモの同一判定用キー。images は [(image_data, image_mime), ...]（並び順どおり）"""
+    return (label, memo, tuple(images))
+
+
 def _merge_figure_notes_lossless(conn, cite_key, src_notes):
-    """cite_key に対して src_notes (label, memo, image_data, image_mime, sort_order) を
-    lossless マージする（完全一致する画像メモは重複追加しない、dedup と同一方針）"""
+    """cite_key に対して src_notes [(label, memo, images, sort_order)] を
+    lossless マージする（ラベル・メモ・画像の並びが完全一致する図表メモは重複追加しない、dedup と同一方針）。
+    images は [(image_data, image_mime), ...]"""
     if not src_notes:
         return
     cur = conn.cursor()
@@ -295,28 +330,62 @@ def _merge_figure_notes_lossless(conn, cite_key, src_notes):
         return
     entry_id = row[0]
 
-    cur.execute(
-        "SELECT label, memo, image_data, image_mime FROM figure_notes WHERE entry_id = ?",
-        (entry_id,),
-    )
-    existing = set(cur.fetchall())
+    cur.execute("SELECT id, label, memo FROM figure_notes WHERE entry_id = ?", (entry_id,))
+    existing = set()
+    for fn_id, label, memo in cur.fetchall():
+        imgs = conn.execute(
+            "SELECT image_data, image_mime FROM figure_images WHERE figure_id = ? "
+            "ORDER BY sort_order, id",
+            (fn_id,),
+        ).fetchall()
+        existing.add(_figure_note_key(label, memo, imgs))
 
     cur.execute("SELECT MAX(sort_order) FROM figure_notes WHERE entry_id = ?", (entry_id,))
     next_order = (cur.fetchone()[0] or -1) + 1
 
     added = 0
-    for label, memo, image_data, image_mime, _src_order in src_notes:
-        if (label, memo, image_data, image_mime) in existing:
+    for label, memo, images, _src_order in src_notes:
+        key = _figure_note_key(label, memo, images)
+        if key in existing:
             continue
+        existing.add(key)
         cur.execute(
-            "INSERT INTO figure_notes (entry_id, label, memo, image_data, image_mime, sort_order) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (entry_id, label, memo, image_data, image_mime, next_order),
+            "INSERT INTO figure_notes (entry_id, label, memo, sort_order) VALUES (?, ?, ?, ?)",
+            (entry_id, label, memo, next_order),
         )
+        fn_id = cur.lastrowid
+        for i, (image_data, image_mime) in enumerate(images):
+            cur.execute(
+                "INSERT INTO figure_images (figure_id, image_data, image_mime, sort_order) "
+                "VALUES (?, ?, ?, ?)",
+                (fn_id, image_data, image_mime, i),
+            )
         next_order += 1
         added += 1
     if added:
         conn.commit()
+
+
+def _read_src_figure_notes(src_cur, src_id, has_figure_images):
+    """取り込み元 .db の図表メモを [(label, memo, images, sort_order)] で読む。
+    【後方互換】figure_images より前の .db では、画像は figure_notes.image_data の 1 枚だけ。"""
+    src_cur.execute(
+        "SELECT id, label, memo, image_data, image_mime, sort_order "
+        "FROM figure_notes WHERE entry_id = ? ORDER BY sort_order, id",
+        (src_id,),
+    )
+    notes = []
+    for fn_id, label, memo, legacy_data, legacy_mime, order in src_cur.fetchall():
+        images = [(legacy_data, legacy_mime)] if legacy_data is not None else []
+        if has_figure_images:
+            src_cur.execute(
+                "SELECT image_data, image_mime FROM figure_images WHERE figure_id = ? "
+                "ORDER BY sort_order, id",
+                (fn_id,),
+            )
+            images += src_cur.fetchall()
+        notes.append((label, memo, images, order))
+    return notes
 
 
 def _import_from_db(args):
@@ -335,6 +404,7 @@ def _import_from_db(args):
         src_conn.close()
         sys.exit(f"Error: Source DB is missing required tables: {', '.join(sorted(missing))}")
     has_figure_notes = 'figure_notes' in tables
+    has_figure_images = 'figure_images' in tables
 
     # extras.note は後から追加されたカラムなので、無い古い .db との互換性を保つ
     src_cur.execute("PRAGMA table_info(extras)")
@@ -371,12 +441,7 @@ def _import_from_db(args):
         _merge_extras_lossless(conn, cite_key, src_extras)
 
         if has_figure_notes:
-            src_cur.execute(
-                "SELECT label, memo, image_data, image_mime, sort_order "
-                "FROM figure_notes WHERE entry_id = ?",
-                (src_id,),
-            )
-            src_notes = src_cur.fetchall()
+            src_notes = _read_src_figure_notes(src_cur, src_id, has_figure_images)
             _merge_figure_notes_lossless(conn, cite_key, src_notes)
 
     src_conn.close()
@@ -500,6 +565,7 @@ def merge_entries(conn, keep_id, delete_id):
             cur.execute("UPDATE extras SET entry_id = ? WHERE id = ?", (keep_id, ex_id))
 
     # Merge figure_notes (Lossless): 全件を keep_id へ付け替え、sort_order は末尾に再採番
+    # （figure_images は figure_id で図表メモにぶら下がるので、付け替えに追随する）
     cur.execute("SELECT MAX(sort_order) FROM figure_notes WHERE entry_id = ?", (keep_id,))
     next_order = (cur.fetchone()[0] or -1) + 1
     cur.execute(
