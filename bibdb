@@ -80,14 +80,12 @@ def init_db(conn):
         entry_id INTEGER NOT NULL,
         label TEXT,
         memo TEXT,
-        image_data BLOB,
-        image_mime TEXT,
         sort_order INTEGER NOT NULL DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY(entry_id) REFERENCES entries(id) ON DELETE CASCADE
     )
     """)
-    # 図表メモの画像（1 つの図表メモに何枚でも）。figure_notes.image_data は後方互換のためだけに残す
+    # 図表メモの画像（1 つの図表メモに 0 枚以上）
     cur.execute("""
     CREATE TABLE IF NOT EXISTS figure_images (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,28 +97,8 @@ def init_db(conn):
         FOREIGN KEY(figure_id) REFERENCES figure_notes(id) ON DELETE CASCADE
     )
     """)
-    migrate_legacy_figure_images(conn)
     conn.commit()
 
-
-def migrate_legacy_figure_images(conn):
-    """【後方互換】画像を figure_images に分ける前の DB では、画像が figure_notes.image_data に
-    1 枚だけ入っている。それを figure_images の 1 枚目に移し、元の列は NULL にする（何度呼んでもよい）。
-    bibweb の起動時にも同じ処理がある。後方互換を切るときは、この関数と呼び出し、
-    _read_src_figure_images の旧形式の読み出し、figure_notes の image_data/image_mime 列を消す。"""
-    conn.execute(
-        "INSERT INTO figure_images (figure_id, image_data, image_mime, sort_order, created_at) "
-        "SELECT id, image_data, image_mime, 0, created_at FROM figure_notes "
-        "WHERE image_data IS NOT NULL"
-    )
-    conn.execute(
-        "UPDATE figure_notes SET image_data = NULL, image_mime = NULL "
-        "WHERE image_data IS NOT NULL"
-    )
-
-# -----------------------------------------------------------------------------
-# 機能 1: Import (旧 bib2db.py)
-# -----------------------------------------------------------------------------
 def get_db_entry_dict(cur, cite_key):
     """DBから既存データを取得して辞書形式で返す (比較用)"""
     cur.execute("SELECT id, entry_type FROM entries WHERE cite_key = ?", (cite_key,))
@@ -367,16 +345,15 @@ def _merge_figure_notes_lossless(conn, cite_key, src_notes):
 
 
 def _read_src_figure_notes(src_cur, src_id, has_figure_images):
-    """取り込み元 .db の図表メモを [(label, memo, images, sort_order)] で読む。
-    【後方互換】figure_images より前の .db では、画像は figure_notes.image_data の 1 枚だけ。"""
+    """取り込み元 .db の図表メモを [(label, memo, images, sort_order)] で読む"""
     src_cur.execute(
-        "SELECT id, label, memo, image_data, image_mime, sort_order "
+        "SELECT id, label, memo, sort_order "
         "FROM figure_notes WHERE entry_id = ? ORDER BY sort_order, id",
         (src_id,),
     )
     notes = []
-    for fn_id, label, memo, legacy_data, legacy_mime, order in src_cur.fetchall():
-        images = [(legacy_data, legacy_mime)] if legacy_data is not None else []
+    for fn_id, label, memo, order in src_cur.fetchall():
+        images = []
         if has_figure_images:
             src_cur.execute(
                 "SELECT image_data, image_mime FROM figure_images WHERE figure_id = ? "

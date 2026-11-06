@@ -426,8 +426,6 @@ pandoc input.md --bibliography=temp.bib --csl=apa.csl -o reference_list.docx
 | entry_id | INTEGER | NOT NULL, FOREIGN KEY → entries(id) ON DELETE CASCADE | 親エントリ |
 | label | TEXT |  | 例: `Fig. 3`, `Table 2`（自由記述） |
 | memo | TEXT |  | ユーザーのメモ・解釈 |
-| image_data | BLOB |  | **後方互換のためだけに残す列（常に NULL）**。画像は `figure_images` に置く |
-| image_mime | TEXT |  | 同上 |
 | sort_order | INTEGER | NOT NULL DEFAULT 0 | 表示順。`bibweb` の GUI から後から並べ替え可能 |
 | created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP | 登録日時 |
 
@@ -443,8 +441,6 @@ pandoc input.md --bibliography=temp.bib --csl=apa.csl -o reference_list.docx
 | image_mime | TEXT |  | 例: `image/png` |
 | sort_order | INTEGER | NOT NULL DEFAULT 0 | 図表メモの中での並び |
 | created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP | 登録日時 |
-
-**旧形式からの移行（後方互換）**: `figure_images` より前の DB では、画像は `figure_notes.image_data` に 1 枚だけ入っていた。`bibdb` の `init_db` と `bibweb` の起動時に、それを `figure_images` の 1 枚目へ移し、元の列を NULL にする（何度実行してもよい）。旧形式の `.db` を `import` したときも同じく読み替える。後方互換を切るときは `migrate_legacy_figure_images`・`_read_src_figure_notes` の旧形式の読み出し・2 つの旧列を消す。
 
 **設計意図**
 - `figure_notes` も `extras` と同様、`bibdb` のサブコマンドでは編集しません（画像添付は `bibweb` の GUI から行う運用を想定）。
